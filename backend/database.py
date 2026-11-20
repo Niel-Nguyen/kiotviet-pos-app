@@ -244,8 +244,157 @@ def init_db():
     """)
 
     conn.commit()
+    backup_db_before_migration()
+    apply_migrations(conn)
     seed_initial_data(conn)
     conn.close()
+
+def backup_db_before_migration():
+    """Create a safety backup of SQLite database before executing migrations."""
+    if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0:
+        backup_dir = os.path.dirname(DB_FILE)
+        pre_v2_backup = os.path.join(backup_dir, 'kiotviet_backup_pre_v2.db')
+        if not os.path.exists(pre_v2_backup):
+            try:
+                import shutil
+                shutil.copy2(DB_FILE, pre_v2_backup)
+                print(f"[Backup] Đã tự động sao lưu an toàn cơ sở dữ liệu: {pre_v2_backup}")
+            except Exception as e:
+                print(f"[Backup Warning] Không thể sao lưu tự động: {e}")
+
+def apply_migrations(conn):
+    """
+    Versioned database migrations with strict schema tracking.
+    Ensures safe, additive schema evolutions with zero data loss.
+    """
+    cursor = conn.cursor()
+    
+    # 0. Create schema_migrations table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+    )
+    """)
+    conn.commit()
+
+    # Get applied versions
+    cursor.execute("SELECT version FROM schema_migrations")
+    applied_versions = {row['version'] for row in cursor.fetchall()}
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # MIGRATION V1: Baseline schema
+    if 1 not in applied_versions:
+        # Check and migrate columns that might be missing on legacy databases
+        try:
+            cursor.execute("PRAGMA table_info(products)")
+            prod_cols = [r['name'] for r in cursor.fetchall()]
+            if 'sub_unit' not in prod_cols:
+                cursor.execute("ALTER TABLE products ADD COLUMN sub_unit TEXT")
+            if 'sub_unit_ratio' not in prod_cols:
+                cursor.execute("ALTER TABLE products ADD COLUMN sub_unit_ratio REAL DEFAULT 1")
+
+            cursor.execute("PRAGMA table_info(orders)")
+            order_cols = [r['name'] for r in cursor.fetchall()]
+            if 'net_revenue' not in order_cols:
+                cursor.execute("ALTER TABLE orders ADD COLUMN net_revenue REAL DEFAULT 0")
+            if 'vat_percent' not in order_cols:
+                cursor.execute("ALTER TABLE orders ADD COLUMN vat_percent REAL DEFAULT 0")
+            if 'vat_amount' not in order_cols:
+                cursor.execute("ALTER TABLE orders ADD COLUMN vat_amount REAL DEFAULT 0")
+            if 'customer_paid' not in order_cols:
+                cursor.execute("ALTER TABLE orders ADD COLUMN customer_paid REAL DEFAULT 0")
+            if 'change_amount' not in order_cols:
+                cursor.execute("ALTER TABLE orders ADD COLUMN change_amount REAL DEFAULT 0")
+        except Exception as e:
+            print(f"[Migration v1 Note] {e}")
+
+        cursor.execute("INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, 'v1_initial_schema', ?)", (now_str,))
+        conn.commit()
+        print("[Migration] Applied Migration v1: v1_initial_schema")
+
+    # MIGRATION V2: RBAC, User Authentication & Audit Trail
+    if 2 not in applied_versions:
+        print("[Migration] Applying Migration v2: v2_auth_rbac_audit...")
+        
+        # 1. Users table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'viewer',
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_login_at TEXT
+        )
+        """)
+        
+        # 2. Sessions table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            ip_address TEXT,
+            user_agent TEXT
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)")
+
+        # 3. Audit Logs table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            user_name TEXT NOT NULL,
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER,
+            entity_code TEXT,
+            details TEXT,
+            ip_address TEXT,
+            created_at TEXT NOT NULL
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_logs(entity_type, entity_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_code ON audit_logs(entity_code)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(user_id)")
+
+        # 4. Attach user_id and user_name to business vouchers
+        tables_to_add_user = ['orders', 'purchases', 'returns', 'inventory_logs', 'cash_flow']
+        for tbl in tables_to_add_user:
+            try:
+                cursor.execute(f"PRAGMA table_info({tbl})")
+                cols = [r['name'] for r in cursor.fetchall()]
+                if 'user_id' not in cols:
+                    cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER")
+                if 'user_name' not in cols:
+                    cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN user_name TEXT")
+            except Exception as e:
+                print(f"[Migration v2 Column Note] {tbl}: {e}")
+
+        # 5. Mark legacy data clearly with 'Hệ thống / Dữ liệu cũ' (do not guess identity)
+        for tbl in tables_to_add_user:
+            try:
+                cursor.execute(f"UPDATE {tbl} SET user_name = 'Hệ thống / Dữ liệu cũ' WHERE user_name IS NULL")
+            except Exception as e:
+                pass
+
+        cursor.execute("INSERT INTO schema_migrations (version, name, applied_at) VALUES (2, 'v2_auth_rbac_audit', ?)", (now_str,))
+        conn.commit()
+        print("[Migration] Applied Migration v2: v2_auth_rbac_audit successfully!")
+
+def migrate_columns(conn):
+    """Backward compatibility stub redirecting to apply_migrations."""
+    apply_migrations(conn)
 
 def seed_initial_data(conn):
     cursor = conn.cursor()

@@ -1,31 +1,138 @@
 /**
  * API Service for KiotPro POS & Distribution Management
+ * Supports Cookie & Token-based Authentication, RBAC, and Audit Logging
  */
 
 const API = {
+  token: localStorage.getItem('kiotpro_token') || '',
+
+  setToken(t) {
+    this.token = t || '';
+    if (t) {
+      localStorage.setItem('kiotpro_token', t);
+    } else {
+      localStorage.removeItem('kiotpro_token');
+    }
+  },
+
   async request(url, options = {}) {
     const defaultHeaders = {
       'Content-Type': 'application/json',
       'Accept': 'application/json'
     };
+    if (this.token) {
+      defaultHeaders['Authorization'] = `Bearer ${this.token}`;
+    }
+
     const config = {
       ...options,
+      credentials: 'same-origin',
       headers: {
         ...defaultHeaders,
         ...options.headers
       }
     };
+
     try {
       const response = await fetch(url, config);
       const data = await response.json();
+
+      if (response.status === 401) {
+        this.setToken('');
+        if (window.App && typeof window.App.showAuthModal === 'function' && !url.includes('/api/auth/')) {
+          window.App.showAuthModal();
+        }
+        throw new Error(data.message || 'Phiên đăng nhập đã hết hạn');
+      }
+
       if (!response.ok) {
-        throw new Error(data.message || `Lỗi máy chủ (${response.status})`);
+        const err = new Error(data.message || `Lỗi máy chủ (${response.status})`);
+        err.code = data.code;
+        throw err;
       }
       return data;
     } catch (err) {
       console.error(`API Error [${url}]:`, err);
       throw err;
     }
+  },
+
+  // Auth & Account Management
+  getBootstrapStatus() {
+    return this.request('/api/auth/bootstrap-status');
+  },
+  bootstrap(data) {
+    return this.request('/api/auth/bootstrap', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  login(data) {
+    return this.request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  logout() {
+    return this.request('/api/auth/logout', {
+      method: 'POST'
+    });
+  },
+  getMe() {
+    return this.request('/api/auth/me');
+  },
+  changePassword(data) {
+    return this.request('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  // Users Management (Admin)
+  getUsers() {
+    return this.request('/api/users');
+  },
+  createUser(data) {
+    return this.request('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  updateUser(id, data) {
+    return this.request(`/api/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  lockUser(id) {
+    return this.request(`/api/users/${id}/lock`, {
+      method: 'POST'
+    });
+  },
+  unlockUser(id) {
+    return this.request(`/api/users/${id}/unlock`, {
+      method: 'POST'
+    });
+  },
+  resetUserPassword(id, data) {
+    return this.request(`/api/users/${id}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  revokeUserSessions(id) {
+    return this.request(`/api/users/${id}/revoke-sessions`, {
+      method: 'POST'
+    });
+  },
+
+  // Audit Logs & Timeline
+  getAuditLogs(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/audit-logs${qs ? '?' + qs : ''}`);
+  },
+  getTimeline(entityType, identifier) {
+    return this.request(`/api/timeline/${entityType}/${encodeURIComponent(identifier)}`);
   },
 
   // Dashboard & Reports
@@ -93,7 +200,7 @@ const API = {
     });
   },
 
-  // Customer-Specific Product Pricing (Price each product with each customer)
+  // Customer-Specific Product Pricing
   getCustomerPrices(customerId) {
     return this.request(`/api/customers/${customerId}/prices`);
   },
@@ -165,7 +272,7 @@ const API = {
     });
   },
 
-  // Returns / Sales Returns (Khách trả hàng)
+  // Returns / Sales Returns
   getReturns() {
     return this.request('/api/returns');
   },

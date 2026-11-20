@@ -8,8 +8,11 @@
 </head>
 <body>
   <div class="app-container">
-    <!-- Left Sidebar -->
-    <aside class="sidebar">
+    <!-- Backdrop overlay for mobile sidebar -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Left Sidebar (Enterprise SaaS Slate Theme) -->
+    <aside class="sidebar" id="app-sidebar">
       <div class="sidebar-header">
         <div class="brand-icon">K</div>
         <div class="brand-text">
@@ -18,92 +21,108 @@
         </div>
       </div>
 
-      <ul class="sidebar-menu">
-        <li>
-          <a class="menu-item active" data-view="dashboard">
-            <span class="icon">📊</span>
-            <span>Tổng quan</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="pos">
-            <span class="icon">🛒</span>
-            <span>Bán hàng (POS)</span>
-            <span class="badge" style="background-color: #10b981;">F9</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="products">
-            <span class="icon">📦</span>
-            <span>Hàng hóa & Kho</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="purchases">
-            <span class="icon">📥</span>
-            <span>Nhập hàng (NCC)</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="customers">
-            <span class="icon">👥</span>
-            <span>Khách & Giá riêng</span>
-            <span class="badge" style="background-color: #f59e0b;">⭐</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="suppliers">
-            <span class="icon">🏭</span>
-            <span>Nhà cung cấp</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="returns">
-            <span class="icon">🔄</span>
-            <span>Khách trả hàng</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="cash-flow">
-            <span class="icon">💰</span>
-            <span>Sổ quỹ & Dòng tiền</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="reports">
-            <span class="icon">🧾</span>
-            <span>Báo cáo doanh thu</span>
-          </a>
-        </li>
-        <li>
-          <a class="menu-item" data-view="settings">
-            <span class="icon">⚙️</span>
-            <span>Cài đặt & Sao lưu</span>
-          </a>
-        </li>
-      </ul>
+      <nav class="sidebar-nav">
+        <div class="nav-section-title">Vận hành bán hàng</div>
+        <a class="menu-item active" data-view="dashboard">
+          <svg class="menu-svg" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span>Tổng quan</span>
+        </a>
+        <a class="menu-item" data-view="pos">
+          <svg class="menu-svg" viewBox="0 0 24 24"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>
+          <span>Bán hàng (POS)</span>
+          <span class="shortcut-kbd">F9</span>
+        </a>
+        <a class="menu-item" data-view="returns">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+          <span>Khách trả hàng</span>
+        </a>
+
+        <div class="nav-section-title">Hàng hóa & Kho</div>
+        <a class="menu-item" data-view="products">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+          <span>Hàng hóa & Kho</span>
+        </a>
+        <a class="menu-item" data-view="purchases">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>
+          <span>Nhập hàng (NCC)</span>
+        </a>
+
+        <div class="nav-section-title">Đối tác & Dòng tiền</div>
+        <a class="menu-item" data-view="customers">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Khách & Giá riêng</span>
+        </a>
+        <a class="menu-item" data-view="suppliers">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg>
+          <span>Nhà cung cấp</span>
+        </a>
+        <a class="menu-item" data-view="cash-flow">
+          <svg class="menu-svg" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
+          <span>Sổ quỹ & Dòng tiền</span>
+        </a>
+
+        <div class="nav-section-title">Báo cáo & Hệ thống</div>
+        <a class="menu-item" data-view="reports">
+          <svg class="menu-svg" viewBox="0 0 24 24"><line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/></svg>
+          <span>Báo cáo doanh thu</span>
+        </a>
+        <a class="menu-item" data-view="audit">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          <span>Nhật ký kiểm toán</span>
+        </a>
+        <a class="menu-item" data-view="users">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          <span>Nhân viên & Phân quyền</span>
+        </a>
+        <a class="menu-item" data-view="settings">
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Cài đặt & Sao lưu</span>
+        </a>
+      </nav>
 
       <div class="sidebar-footer">
-        <div>Hệ thống KiotPro v2.5</div>
-        <small style="color: #8da4af;">Chuẩn kế toán & Giá vốn MAC</small>
+        <div class="version-tag">KiotPro Enterprise v2.5</div>
+        <div class="status-indicator">
+          <span class="status-dot"></span>
+          <span>Hệ thống trực tuyến</span>
+        </div>
       </div>
     </aside>
 
     <!-- Main Content Area -->
     <div class="main-wrapper">
-      <!-- Topbar -->
+      <!-- Topbar Header -->
       <header class="topbar">
         <div class="topbar-left">
+          <button class="btn-sidebar-toggle" id="btn-toggle-sidebar" aria-label="Mở menu điều hướng">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" x2="21" y1="6" y2="6"/><line x1="3" x2="21" y1="12" y2="12"/><line x1="3" x2="21" y1="18" y2="18"/></svg>
+          </button>
           <h2 class="page-title" id="page-title-text">Tổng quan kinh doanh</h2>
         </div>
         <div class="topbar-right">
-          <div class="quick-fund-pill">
+          <div class="quick-fund-pill" id="top-fund-container">
             <span>Quỹ tiền:</span>
             <span class="fund-value" id="top-fund-balance">0 đ</span>
           </div>
-          <button class="btn-pos-quick" onclick="App.navigate('pos')">
-            <span>🛒</span> Bán hàng (F9)
+          <button class="btn-pos-quick" id="btn-quick-pos" onclick="App.navigate('pos')">
+            <svg viewBox="0 0 24 24" fill="none"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>
+            <span>Bán hàng (F9)</span>
           </button>
+
+          <!-- User Profile & Actions in Topbar -->
+          <div class="user-profile-badge" id="topbar-user-badge" style="display: flex; align-items: center; gap: 8px; margin-left: 8px; padding-left: 12px; border-left: 1px solid var(--color-border);">
+            <div class="user-avatar" id="user-avatar-initials" style="width: 32px; height: 32px; border-radius: 50%; background-color: var(--color-primary-light); color: var(--color-primary); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem;">AD</div>
+            <div style="line-height: 1.2;">
+              <div id="user-display-name" style="font-weight: 600; font-size: 0.85rem;">Người dùng</div>
+              <div id="user-role-badge"><span class="badge badge-blue" style="font-size: 0.65rem; padding: 1px 4px;">Đang tải...</span></div>
+            </div>
+            <button class="btn btn-sm btn-outline" onclick="App.openSelfPasswordModal()" title="Đổi mật khẩu cá nhân" style="padding: 5px 6px; margin-left: 4px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            </button>
+            <button class="btn btn-sm btn-outline" onclick="App.logout()" title="Đăng xuất" style="padding: 5px 8px; color: var(--color-danger-text); border-color: #fecdd3;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -118,13 +137,13 @@
             <!-- Left: Products Catalog & Search -->
             <div class="pos-products-panel">
               <div class="pos-search-bar">
-                <input type="text" id="pos-search-input" class="form-control" placeholder="🔍 Tìm tên sản phẩm, mã SKU hoặc quét mã vạch (Enter)..." autofocus>
+                <input type="text" id="pos-search-input" class="form-control" placeholder="Tìm tên sản phẩm, mã SKU hoặc quét mã vạch (Enter)..." autofocus>
               </div>
               <div class="pos-categories" id="pos-categories-container"></div>
               <div class="pos-products-grid" id="pos-products-grid"></div>
             </div>
 
-            <!-- Right: Cart & Checkout -->
+            <!-- Right: Cart & Checkout Panel -->
             <div class="pos-cart-panel">
               <!-- Customer Bar -->
               <div class="pos-customer-bar">
@@ -146,17 +165,17 @@
                 </div>
                 <div class="summary-row" style="align-items: center;">
                   <span>Chiết khấu (VNĐ):</span>
-                  <input type="number" id="pos-discount-input" class="form-control" style="width: 130px; text-align: right; padding: 4px 8px;" value="0" min="0">
+                  <input type="number" id="pos-discount-input" class="form-control" style="width: 120px; text-align: right; padding: 4px 8px;" value="0" min="0">
                 </div>
                 <div class="summary-row" style="align-items: center;">
-                  <span>Thuế VAT (%):</span>
+                  <span>Thuế VAT:</span>
                   <div style="display: flex; gap: 8px; align-items: center;">
-                    <select id="pos-vat-select" class="form-control" style="width: 80px; padding: 4px 8px;">
+                    <select id="pos-vat-select" class="form-control" style="width: 76px; padding: 3px 6px;">
                       <option value="0">0%</option>
                       <option value="8">8%</option>
                       <option value="10">10%</option>
                     </select>
-                    <span id="pos-vat-amount" style="font-size: 0.85rem; color: #64748b; min-width: 60px; text-align: right;">0 đ</span>
+                    <span id="pos-vat-amount" style="font-size: 0.8rem; color: #64748b; min-width: 65px; text-align: right;">0 đ</span>
                   </div>
                 </div>
                 <div class="summary-row total">
@@ -165,24 +184,24 @@
                 </div>
 
                 <!-- Payment Methods -->
-                <div style="display: flex; gap: 6px; margin: 10px 0;">
-                  <button class="btn btn-sm btn-outline payment-method-btn active" data-method="cash" style="flex: 1;">💵 Tiền mặt</button>
-                  <button class="btn btn-sm btn-outline payment-method-btn" data-method="bank" style="flex: 1;">🏦 C.Khoản</button>
-                  <button class="btn btn-sm btn-outline payment-method-btn" data-method="debt" style="flex: 1; color: #ef4444;">📝 Ghi nợ</button>
+                <div style="display: flex; gap: 6px; margin: 8px 0;">
+                  <button class="btn btn-sm btn-outline payment-method-btn active" data-method="cash" style="flex: 1;">Tiền mặt</button>
+                  <button class="btn btn-sm btn-outline payment-method-btn" data-method="bank" style="flex: 1;">C.Khoản</button>
+                  <button class="btn btn-sm btn-outline payment-method-btn" data-method="debt" style="flex: 1; color: var(--color-danger-text);">Ghi nợ</button>
                 </div>
 
                 <div class="summary-row" style="align-items: center;">
                   <span>Tiền khách đưa:</span>
-                  <input type="number" id="pos-paid-input" class="form-control" style="width: 140px; text-align: right; font-weight: 700; padding: 6px 8px; font-size: 1rem;" value="0" min="0">
+                  <input type="number" id="pos-paid-input" class="form-control" style="width: 135px; text-align: right; font-weight: 700; padding: 5px 8px; font-size: 0.95rem;" value="0" min="0">
                 </div>
 
                 <div class="summary-row" style="font-weight: 600;">
                   <span id="pos-balance-label">Tiền thừa trả khách:</span>
-                  <span id="pos-balance-amount" style="color: #10b981; font-weight: 800;">0 đ</span>
+                  <span id="pos-balance-amount" style="color: var(--color-success); font-weight: 800;">0 đ</span>
                 </div>
 
                 <button class="btn-checkout" onclick="POS.checkout()">
-                  ⚡ THANH TOÁN (IN HÓA ĐƠN)
+                  Thanh Toán & In Hóa Đơn
                 </button>
               </div>
             </div>
@@ -212,6 +231,12 @@
 
         <!-- 10. SETTINGS VIEW -->
         <section id="view-settings" class="view-section" style="display: none;"></section>
+
+        <!-- 11. AUDIT TRAIL VIEW -->
+        <section id="view-audit" class="view-section" style="display: none;"></section>
+
+        <!-- 12. USERS & RBAC VIEW -->
+        <section id="view-users" class="view-section" style="display: none;"></section>
       </main>
     </div>
   </div>
@@ -229,7 +254,7 @@
         <input type="hidden" id="prod-id">
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label">Mã SKU (tự động nếu bỏ trống):</label>
+            <label class="form-label">Mã SKU (tự động nếu để trống):</label>
             <input type="text" id="prod-code" class="form-control" placeholder="SP0001">
           </div>
           <div class="form-group">
@@ -251,8 +276,8 @@
             <input type="text" id="prod-unit" class="form-control" placeholder="Thùng, Hộp, Chai, Cái, Kg...">
           </div>
         </div>
-        <!-- Packaging Sub-unit (Quy đổi đơn vị phân phối) -->
-        <div class="form-row" style="background: #f8fafc; padding: 10px; border-radius: 6px; border: 1px dashed #cbd5e1; margin-bottom: 14px;">
+        <!-- Packaging Sub-unit -->
+        <div class="form-row" style="background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px dashed var(--color-border-strong); margin-bottom: 14px;">
           <div class="form-group" style="margin-bottom: 0;">
             <label class="form-label">Đơn vị quy đổi phụ (nếu có):</label>
             <input type="text" id="prod-sub-unit" class="form-control" placeholder="Ví dụ: Lon, Gói, Hộp nhỏ">
@@ -306,7 +331,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">Tên khách hàng (*):</label>
-            <input type="text" id="cust-name" class="form-control" placeholder="Họ và tên / Tên cửa hàng đại lý">
+            <input type="text" id="cust-name" class="form-control" placeholder="Họ và tên / Tên đại lý">
           </div>
         </div>
         <div class="form-row">
@@ -353,18 +378,17 @@
   <!-- 3. Customer-Specific Pricing Modal -->
   <div class="modal-overlay" id="customer-pricing-modal">
     <div class="modal-dialog modal-dialog-lg">
-      <div class="modal-header" style="background-color: #fefce8;">
+      <div class="modal-header">
         <div>
-          <h3 class="modal-title" style="color: #854d0e;">
-            ⭐ Bảng Giá Riêng Cho Khách Hàng: <span id="cust-pricing-name"></span>
+          <h3 class="modal-title">
+            Bảng Giá Riêng: <span id="cust-pricing-name" style="color: var(--color-primary);"></span>
           </h3>
-          <small style="color: #713f12;">Quản lý giá riêng biệt cho từng sản phẩm đối với khách hàng này. Khi bán hàng hệ thống sẽ tự áp dụng giá này.</small>
+          <small style="color: var(--color-text-subtle);">Quản lý mức giá thỏa thuận riêng cho từng sản phẩm của khách hàng này.</small>
         </div>
         <button class="modal-close" data-close-modal="customer-pricing-modal">✕</button>
       </div>
       <div class="modal-body">
-        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-bottom: 20px;">
-          <h4 style="font-size: 0.95rem; margin-bottom: 10px; color: #0066cc;">+ Thêm / Cập nhật giá riêng cho mặt hàng:</h4>
+        <div style="background: var(--color-surface-muted); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 12px; margin-bottom: 16px;">
           <div style="display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 10px; align-items: flex-end;">
             <div>
               <label class="form-label">Chọn sản phẩm:</label>
@@ -376,7 +400,7 @@
             </div>
             <div>
               <label class="form-label">Ghi chú thỏa thuận:</label>
-              <input type="text" id="cust-pricing-notes" class="form-control" placeholder="Ví dụ: Giá sỉ hợp đồng">
+              <input type="text" id="cust-pricing-notes" class="form-control" placeholder="Giá hợp đồng sỉ...">
             </div>
             <button class="btn btn-success" onclick="App.saveCustomerPriceRule()">Lưu giá riêng</button>
           </div>
@@ -389,10 +413,10 @@
                 <th>Mã SP</th>
                 <th>Tên sản phẩm</th>
                 <th>Đơn vị</th>
-                <th>Giá niêm yết</th>
-                <th>Giá riêng cho khách</th>
+                <th class="text-right">Giá niêm yết</th>
+                <th class="text-right">Giá riêng cho khách</th>
                 <th>Chênh lệch / Ghi chú</th>
-                <th style="text-align: right;">Hành động</th>
+                <th class="text-right">Hành động</th>
               </tr>
             </thead>
             <tbody id="cust-pricing-tbody"></tbody>
@@ -400,7 +424,7 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-primary" data-close-modal="customer-pricing-modal">Xong</button>
+        <button class="btn btn-primary" data-close-modal="customer-pricing-modal">Đóng</button>
       </div>
     </div>
   </div>
@@ -414,13 +438,13 @@
       </div>
       <div class="modal-body">
         <input type="hidden" id="debt-cust-id">
-        <div style="margin-bottom: 14px; font-size: 0.95rem;">
+        <div style="margin-bottom: 14px; font-size: 0.9rem; background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
           Khách hàng: <strong id="debt-cust-name"></strong><br>
-          Công nợ hiện tại: <span id="debt-cust-current" style="color: #ef4444; font-weight: 700;"></span>
+          Dư nợ hiện tại: <span id="debt-cust-current" style="color: var(--color-danger); font-weight: 700;"></span>
         </div>
         <div class="form-group">
           <label class="form-label">Số tiền thu (VNĐ) (* không vượt quá dư nợ):</label>
-          <input type="number" id="debt-pay-amount" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+          <input type="number" id="debt-pay-amount" class="form-control" style="font-size: 1rem; font-weight: 700;">
         </div>
         <div class="form-group">
           <label class="form-label">Hình thức nhận tiền:</label>
@@ -432,7 +456,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="cust-debt-modal">Hủy</button>
-        <button class="btn btn-success" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ & Lập Phiếu Thu</button>
+        <button class="btn btn-success" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ</button>
       </div>
     </div>
   </div>
@@ -462,7 +486,7 @@
             <input type="text" id="supp-phone" class="form-control">
           </div>
           <div class="form-group">
-            <label class="form-label">Nợ hiện tại (VNĐ):</label>
+            <label class="form-label">Nợ ban đầu (VNĐ):</label>
             <input type="number" id="supp-debt" class="form-control" value="0">
           </div>
         </div>
@@ -491,13 +515,13 @@
       </div>
       <div class="modal-body">
         <input type="hidden" id="debt-supp-id">
-        <div style="margin-bottom: 14px; font-size: 0.95rem;">
+        <div style="margin-bottom: 14px; font-size: 0.9rem; background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
           Nhà cung cấp: <strong id="debt-supp-name"></strong><br>
-          Nợ phải trả: <span id="debt-supp-current" style="color: #ef4444; font-weight: 700;"></span>
+          Nợ phải trả: <span id="debt-supp-current" style="color: var(--color-danger); font-weight: 700;"></span>
         </div>
         <div class="form-group">
           <label class="form-label">Số tiền chi trả (VNĐ) (* không vượt quá dư nợ):</label>
-          <input type="number" id="debt-supp-amount" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+          <input type="number" id="debt-supp-amount" class="form-control" style="font-size: 1rem; font-weight: 700;">
         </div>
         <div class="form-group">
           <label class="form-label">Nguồn tiền chi:</label>
@@ -509,7 +533,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="supp-debt-modal">Hủy</button>
-        <button class="btn btn-primary" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả & Lập Phiếu Chi</button>
+        <button class="btn btn-primary" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả</button>
       </div>
     </div>
   </div>
@@ -522,7 +546,7 @@
         <button class="modal-close" data-close-modal="purchase-create-modal">✕</button>
       </div>
       <div class="modal-body">
-        <div class="form-row" style="margin-bottom: 14px;">
+        <div class="form-row" style="margin-bottom: 12px;">
           <div class="form-group">
             <label class="form-label">Nhà cung cấp:</label>
             <select id="purch-supplier-select" class="form-control"></select>
@@ -537,40 +561,40 @@
           </div>
         </div>
 
-        <div style="background: #f1f5f9; padding: 12px; border-radius: 6px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center;">
+        <div style="background: var(--color-surface-muted); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: 14px; display: flex; gap: 8px; align-items: center; border: 1px solid var(--color-border);">
           <button class="btn btn-sm btn-primary" onclick="App.promptAddProductToPurchase()">+ Thêm sản phẩm nhập kho</button>
           <button class="btn btn-sm btn-outline" onclick="App.openCreateProductModal()">+ Tạo hàng hóa mới</button>
         </div>
 
-        <div class="table-responsive" style="max-height: 250px;">
+        <div class="table-responsive" style="max-height: 240px;">
           <table class="table">
             <thead>
               <tr>
                 <th>Sản phẩm</th>
                 <th>ĐVT</th>
-                <th>SL Nhập</th>
-                <th>Giá nhập (VNĐ)</th>
-                <th>Thành tiền</th>
-                <th></th>
+                <th style="width: 100px;">SL Nhập</th>
+                <th style="width: 140px;">Giá nhập (VNĐ)</th>
+                <th class="text-right">Thành tiền</th>
+                <th style="width: 40px;"></th>
               </tr>
             </thead>
             <tbody id="purch-items-tbody"></tbody>
           </table>
         </div>
 
-        <div style="margin-top: 16px; background-color: #f8fafc; padding: 14px; border-radius: 8px;">
-          <div style="display: flex; justify-content: space-between; font-size: 1rem; margin-bottom: 8px;">
+        <div style="margin-top: 14px; background-color: var(--color-surface-muted); padding: 12px 14px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+          <div style="display: flex; justify-content: space-between; font-size: 0.95rem; margin-bottom: 8px;">
             <span>Tổng tiền hàng nhập:</span>
-            <strong id="purch-total-amount" style="color: #0066cc;">0 đ</strong>
+            <strong id="purch-total-amount" style="color: var(--color-primary); font-size: 1.05rem;">0 đ</strong>
           </div>
           <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Số tiền thực tế thanh toán cho NCC:</label>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">Thanh toán cho NCC:</label>
               <input type="number" id="purch-paid-amount" class="form-control" value="0">
             </div>
-            <div class="form-group">
+            <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label">Ghi chú phiếu nhập:</label>
-              <input type="text" id="purch-notes" class="form-control" placeholder="Số hóa đơn đỏ, số phiếu giao...">
+              <input type="text" id="purch-notes" class="form-control" placeholder="Số chứng từ giao hàng...">
             </div>
           </div>
         </div>
@@ -608,23 +632,23 @@
             <input type="number" id="ret-price" class="form-control" value="0">
           </div>
         </div>
-        <div style="background: #f8fafc; padding: 12px; border-radius: 6px; margin: 10px 0;">
+        <div style="background: var(--color-surface-muted); padding: 12px; border-radius: var(--radius-md); margin: 10px 0; border: 1px solid var(--color-border);">
           <div style="display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 8px;">
-            <span>Tổng giá trị hàng trả lại:</span>
-            <span id="ret-total-amount" style="color: #0066cc;">0 đ</span>
+            <span>Tổng giá trị hàng trả:</span>
+            <span id="ret-total-amount" style="color: var(--color-primary);">0 đ</span>
           </div>
           <div class="form-row">
             <div class="form-group">
-              <label class="form-label">Tiền mặt hoàn trả cho khách:</label>
+              <label class="form-label">Tiền mặt hoàn khách:</label>
               <input type="number" id="ret-refund-amount" class="form-control" value="0">
             </div>
             <div class="form-group">
-              <label class="form-label">Hoặc trừ vào công nợ cũ:</label>
+              <label class="form-label">Hoặc giảm trừ nợ cũ:</label>
               <input type="number" id="ret-debt-deduct" class="form-control" value="0">
             </div>
           </div>
           <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Nguồn tiền hoàn (nếu trả tiền mặt):</label>
+            <label class="form-label">Nguồn tiền hoàn:</label>
             <select id="ret-fund-type" class="form-control">
               <option value="cash">Tiền mặt tại két quầy</option>
               <option value="bank">Tài khoản ngân hàng</option>
@@ -638,7 +662,7 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="return-modal">Hủy</button>
-        <button class="btn btn-primary" onclick="App.submitSalesReturn()">Xác nhận Nhập lại kho & Hoàn tiền</button>
+        <button class="btn btn-primary" onclick="App.submitSalesReturn()">Xác nhận Hoàn trả</button>
       </div>
     </div>
   </div>
@@ -658,8 +682,8 @@
                 <th>Thời gian</th>
                 <th>Chứng từ</th>
                 <th>Loại giao dịch</th>
-                <th style="text-align: center;">Số lượng thay đổi</th>
-                <th style="text-align: center;">Tồn trước → Tồn sau</th>
+                <th class="text-center">Số lượng thay đổi</th>
+                <th class="text-center">Tồn trước → sau</th>
                 <th>Ghi chú</th>
               </tr>
             </thead>
@@ -668,7 +692,7 @@
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-primary" data-close-modal="stock-logs-modal">Đóng</button>
+        <button class="btn btn-outline" data-close-modal="stock-logs-modal">Đóng</button>
       </div>
     </div>
   </div>
@@ -682,13 +706,13 @@
       </div>
       <div class="modal-body">
         <input type="hidden" id="adjust-product-id">
-        <div style="margin-bottom: 14px;">
+        <div style="margin-bottom: 14px; background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
           Sản phẩm: <strong id="adjust-product-name"></strong><br>
-          Tồn kho trên hệ thống: <span id="adjust-current-stock" style="font-weight: 700; color: #0066cc;"></span>
+          Tồn kho trên hệ thống: <span id="adjust-current-stock" style="font-weight: 700; color: var(--color-primary);"></span>
         </div>
         <div class="form-group">
           <label class="form-label">Số lượng thực tế kiểm đếm:</label>
-          <input type="number" id="adjust-actual-stock" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+          <input type="number" id="adjust-actual-stock" class="form-control" style="font-size: 1rem; font-weight: 700;">
         </div>
         <div class="form-group">
           <label class="form-label">Lý do điều chỉnh:</label>
@@ -717,7 +741,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">Số tiền (VNĐ) (*):</label>
-          <input type="number" id="cf-amount" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+          <input type="number" id="cf-amount" class="form-control" style="font-size: 1rem; font-weight: 700;">
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -727,7 +751,7 @@
           <div class="form-group">
             <label class="form-label">Tài khoản quỹ:</label>
             <select id="cf-fund-type" class="form-control">
-              <option value="cash">Tiền mặt tại quầy</option>
+              <option value="cash">Tiền mặt</option>
               <option value="bank">Tài khoản ngân hàng</option>
             </select>
           </div>
@@ -746,7 +770,7 @@
 
   <!-- 12. Thermal Receipt Preview Modal -->
   <div class="modal-overlay" id="receipt-modal">
-    <div class="modal-dialog" style="max-width: 400px;">
+    <div class="modal-dialog" style="max-width: 380px;">
       <div class="modal-header">
         <h3 class="modal-title">Hóa đơn thanh toán</h3>
         <button class="modal-close" data-close-modal="receipt-modal">✕</button>
@@ -754,15 +778,244 @@
       <div class="modal-body" id="receipt-content" style="padding: 10px;"></div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="receipt-modal">Đóng</button>
-        <button class="btn btn-primary" onclick="window.print()">🖨️ In hóa đơn</button>
+        <button class="btn btn-primary" onclick="window.print()">In hóa đơn</button>
       </div>
     </div>
   </div>
 
-  <!-- Toast Notification Container -->
+  <!-- 13. Authentication & Bootstrap Modal (Full-Screen Blocking when not logged in) -->
+  <div class="modal-overlay" id="auth-modal" style="z-index: 99999; backdrop-filter: blur(4px);">
+    <div class="modal-dialog" style="max-width: 440px; margin-top: 60px;">
+      <!-- Bootstrap View (Shown only on first-time setup) -->
+      <div id="auth-bootstrap-container" style="display: none;">
+        <div class="modal-header" style="background: var(--color-primary); color: white; border-radius: var(--radius-lg) var(--radius-lg) 0 0;">
+          <div>
+            <h3 class="modal-title" style="color: white; font-size: 1.15rem;">Khởi Tạo Hệ Thống KiotPro</h3>
+            <div style="font-size: 0.8125rem; opacity: 0.9; margin-top: 2px;">Thiết lập tài khoản Quản trị viên tối cao (Lần đầu)</div>
+          </div>
+        </div>
+        <div class="modal-body" style="padding: 24px;">
+          <div style="background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 12px; border-radius: var(--radius-md); font-size: 0.8125rem; margin-bottom: 16px; line-height: 1.4;">
+            <strong>Lưu ý bảo mật:</strong> Hệ thống không dùng mật khẩu mặc định. Vui lòng tạo tài khoản quản trị đầu tiên để bắt đầu sử dụng. Endpoint này sẽ đóng vĩnh viễn sau khi hoàn tất.
+          </div>
+          <form id="bootstrap-form" onsubmit="App.handleBootstrapSubmit(event)">
+            <div class="form-group">
+              <label class="form-label">Tên đăng nhập quản trị (*):</label>
+              <input type="text" id="bs-username" class="form-control" placeholder="admin" required minlength="3">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Họ và tên Quản trị viên (*):</label>
+              <input type="text" id="bs-fullname" class="form-control" placeholder="Nguyễn Văn Quản Trị" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mật khẩu bảo vệ (*, tối thiểu 6 ký tự):</label>
+              <input type="password" id="bs-password" class="form-control" placeholder="Nhập mật khẩu an toàn..." required minlength="6">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Xác nhận mật khẩu (*):</label>
+              <input type="password" id="bs-confirm-password" class="form-control" placeholder="Nhập lại mật khẩu..." required minlength="6">
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%; padding: 10px; font-weight: 700; font-size: 0.95rem; margin-top: 8px;">
+              Khởi tạo Quản trị viên & Đăng nhập
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Standard Login View -->
+      <div id="auth-login-container">
+        <div class="modal-header" style="text-align: center; display: block; padding: 24px 24px 16px;">
+          <div style="width: 48px; height: 48px; margin: 0 auto 12px; background: var(--color-primary-light); color: var(--color-primary); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          </div>
+          <h3 class="modal-title" style="font-size: 1.25rem;">Đăng Nhập KiotPro</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 4px;">Hệ thống quản lý bán hàng & phân phối bảo mật</div>
+        </div>
+        <div class="modal-body" style="padding: 0 24px 24px;">
+          <form id="login-form" onsubmit="App.handleLoginSubmit(event)">
+            <div class="form-group">
+              <label class="form-label">Tên đăng nhập:</label>
+              <input type="text" id="login-username" class="form-control" placeholder="Nhập tên đăng nhập..." required autofocus>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mật khẩu:</label>
+              <input type="password" id="login-password" class="form-control" placeholder="Nhập mật khẩu..." required>
+            </div>
+            <div id="login-error-msg" style="color: var(--color-danger); font-size: 0.8125rem; margin-bottom: 12px; display: none;"></div>
+            <button type="submit" class="btn btn-primary" id="btn-login-submit" style="width: 100%; padding: 10px; font-weight: 700; font-size: 0.95rem;">
+              Đăng nhập hệ thống
+            </button>
+          </form>
+          <div style="font-size: 0.75rem; color: var(--color-text-muted); text-align: center; margin-top: 16px; line-height: 1.4;">
+            Mọi thao tác nghiệp vụ được kiểm soát truy cập (RBAC) và lưu vết kiểm toán (Audit Trail) tự động.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 14. Create User Modal -->
+  <div class="modal-overlay" id="user-create-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Thêm nhân viên mới</h3>
+        <button class="modal-close" data-close-modal="user-create-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="user-create-form" onsubmit="App.saveNewUser(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Tên đăng nhập (*, viết liền không dấu):</label>
+              <input type="text" id="uc-username" class="form-control" placeholder="cashier01" required minlength="3">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Vai trò / Phân quyền (*):</label>
+              <select id="uc-role" class="form-control" required>
+                <option value="cashier">Thu ngân (Bán hàng, in hóa đơn)</option>
+                <option value="warehouse">Kho (Nhập hàng, kiểm kho)</option>
+                <option value="accountant">Kế toán (Công nợ, sổ quỹ, báo cáo)</option>
+                <option value="manager">Quản lý (Báo cáo, bán, kho, công nợ)</option>
+                <option value="viewer">Chỉ xem (Xem dữ liệu, không giao dịch)</option>
+                <option value="admin">Quản trị viên (Toàn quyền hệ thống)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Họ và tên nhân viên (*):</label>
+            <input type="text" id="uc-fullname" class="form-control" placeholder="Trần Thị Thu Ngân" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Mật khẩu ban đầu (*, tối thiểu 6 ký tự):</label>
+            <input type="password" id="uc-password" class="form-control" placeholder="Mật khẩu khởi tạo..." required minlength="6">
+          </div>
+          <div class="modal-footer" style="padding: 16px 0 0; margin-top: 16px; border-top: 1px solid var(--color-border);">
+            <button type="button" class="btn btn-outline" data-close-modal="user-create-modal">Hủy</button>
+            <button type="submit" class="btn btn-primary">Lưu nhân viên</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 15. Edit User Modal -->
+  <div class="modal-overlay" id="user-edit-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Sửa thông tin nhân viên</h3>
+        <button class="modal-close" data-close-modal="user-edit-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="user-edit-form" onsubmit="App.saveEditUser(event)">
+          <input type="hidden" id="ue-id">
+          <div class="form-group">
+            <label class="form-label">Tên đăng nhập:</label>
+            <input type="text" id="ue-username" class="form-control" disabled style="background: var(--color-surface-muted);">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Họ và tên nhân viên (*):</label>
+            <input type="text" id="ue-fullname" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Vai trò / Phân quyền (*):</label>
+            <select id="ue-role" class="form-control" required>
+              <option value="cashier">Thu ngân (Bán hàng, in hóa đơn)</option>
+              <option value="warehouse">Kho (Nhập hàng, kiểm kho)</option>
+              <option value="accountant">Kế toán (Công nợ, sổ quỹ, báo cáo)</option>
+              <option value="manager">Quản lý (Báo cáo, bán, kho, công nợ)</option>
+              <option value="viewer">Chỉ xem (Xem dữ liệu, không giao dịch)</option>
+              <option value="admin">Quản trị viên (Toàn quyền hệ thống)</option>
+            </select>
+          </div>
+          <div class="modal-footer" style="padding: 16px 0 0; margin-top: 16px; border-top: 1px solid var(--color-border);">
+            <button type="button" class="btn btn-outline" data-close-modal="user-edit-modal">Hủy</button>
+            <button type="submit" class="btn btn-primary">Lưu thay đổi</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 16. Admin Reset Password Modal -->
+  <div class="modal-overlay" id="user-password-modal">
+    <div class="modal-dialog" style="max-width: 420px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Đặt lại mật khẩu</h3>
+        <button class="modal-close" data-close-modal="user-password-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="App.saveResetPassword(event)">
+          <input type="hidden" id="rp-id">
+          <div style="margin-bottom: 12px;">
+            Đặt lại mật khẩu cho tài khoản: <strong id="rp-username"></strong>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Mật khẩu mới (*, tối thiểu 6 ký tự):</label>
+            <input type="password" id="rp-new-password" class="form-control" required minlength="6">
+          </div>
+          <div class="modal-footer" style="padding: 16px 0 0; margin-top: 16px; border-top: 1px solid var(--color-border);">
+            <button type="button" class="btn btn-outline" data-close-modal="user-password-modal">Hủy</button>
+            <button type="submit" class="btn btn-primary">Xác nhận đổi</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 17. User Self Password Modal -->
+  <div class="modal-overlay" id="user-self-password-modal">
+    <div class="modal-dialog" style="max-width: 420px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Đổi mật khẩu cá nhân</h3>
+        <button class="modal-close" data-close-modal="user-self-password-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="App.saveSelfPassword(event)">
+          <div class="form-group">
+            <label class="form-label">Mật khẩu hiện tại (*):</label>
+            <input type="password" id="sp-old-password" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Mật khẩu mới (*, tối thiểu 6 ký tự):</label>
+            <input type="password" id="sp-new-password" class="form-control" required minlength="6">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Xác nhận mật khẩu mới (*):</label>
+            <input type="password" id="sp-confirm-password" class="form-control" required minlength="6">
+          </div>
+          <div class="modal-footer" style="padding: 16px 0 0; margin-top: 16px; border-top: 1px solid var(--color-border);">
+            <button type="button" class="btn btn-outline" data-close-modal="user-self-password-modal">Hủy</button>
+            <button type="submit" class="btn btn-primary">Đổi mật khẩu</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 18. Timeline & Audit Trail Details Modal -->
+  <div class="modal-overlay" id="timeline-modal">
+    <div class="modal-dialog" style="max-width: 650px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="timeline-title">Lịch sử nghiệp vụ & Truy vết kiểm toán</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;" id="timeline-subtitle">Theo dõi chuỗi sự kiện theo thứ tự thời gian</div>
+        </div>
+        <button class="modal-close" data-close-modal="timeline-modal">✕</button>
+      </div>
+      <div class="modal-body" style="max-height: 70vh; overflow-y: auto; padding: 20px;">
+        <div id="timeline-events-container" class="timeline-container">
+          <!-- Populated dynamically via App.renderTimeline() -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" data-close-modal="timeline-modal">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Scripts -->
+  <!-- JavaScript Modules -->
   <script src="js/api.js"></script>
   <script src="js/pos.js"></script>
   <script src="js/app.js"></script>

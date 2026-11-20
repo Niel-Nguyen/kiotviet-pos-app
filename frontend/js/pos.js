@@ -168,7 +168,7 @@ const POS = {
           <div class="product-price-row">
             <div>
               <div class="product-price">${App.formatMoney(effectivePrice)}</div>
-              ${hasCustom ? `<span class="badge-custom-price">⭐ Giá riêng</span> <span style="text-decoration: line-through; font-size: 0.72rem; color: #94a3b8;">${App.formatMoney(p.sale_price)}</span>` : ''}
+              ${hasCustom ? `<span class="badge-custom-price"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg> Giá riêng</span> <span style="text-decoration: line-through; font-size: 0.72rem; color: #94a3b8;">${App.formatMoney(p.sale_price)}</span>` : ''}
             </div>
           </div>
         </div>
@@ -291,10 +291,14 @@ const POS = {
 
     if (this.cart.length === 0) {
       list.innerHTML = `
-        <div style="text-align: center; color: #94a3b8; padding: 40px 10px;">
-          <div style="font-size: 2.5rem; margin-bottom: 10px;">🛒</div>
-          <div>Chưa có sản phẩm nào trong giỏ</div>
-          <div style="font-size: 0.8rem; margin-top: 4px;">Chọn sản phẩm hoặc quét mã vạch để thêm</div>
+        <div class="empty-state" style="padding: 36px 16px;">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-state-icon">
+            <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <path d="M16 10a4 4 0 0 1-8 0"></path>
+          </svg>
+          <div style="font-weight: 500; color: var(--color-text-secondary); margin-bottom: 4px;">Chưa có sản phẩm trong giỏ</div>
+          <div style="font-size: 0.8125rem; color: var(--color-text-muted);">Tìm kiếm hoặc quét mã vạch để thêm</div>
         </div>
       `;
       this.updateTotals();
@@ -306,7 +310,7 @@ const POS = {
         <div class="cart-item-header">
           <div>
             <span class="cart-item-name">${item.name}</span>
-            ${item.is_custom_price ? '<span class="badge-custom-price" style="margin-left: 6px;">⭐ Giá riêng</span>' : ''}
+            ${item.is_custom_price ? '<span class="badge-custom-price" style="margin-left: 6px;"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg> Giá riêng</span>' : ''}
           </div>
           <button class="cart-item-delete" onclick="POS.removeFromCart(${item.product_id})" title="Xóa">✕</button>
         </div>
@@ -319,8 +323,9 @@ const POS = {
           <div class="cart-item-pricing">
             <div class="cart-item-subtotal">${App.formatMoney(item.subtotal)}</div>
             <div class="cart-item-unit-price">
-              <span style="cursor: pointer; text-decoration: underline dotted;" onclick="POS.promptEditPrice(${item.product_id})">
-                ${App.formatMoney(item.sale_price)} / ${item.unit} ✏️
+              <span style="cursor: pointer; text-decoration: underline dotted; display: inline-flex; align-items: center; gap: 3px;" onclick="POS.promptEditPrice(${item.product_id})" title="Nhấp để sửa giá bán">
+                ${App.formatMoney(item.sale_price)} / ${item.unit}
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
               </span>
             </div>
           </div>
@@ -553,6 +558,7 @@ const POS = {
           <h3 style="font-size: 14px; margin: 4px 0; font-weight: bold;">HÓA ĐƠN BÁN HÀNG</h3>
           <div style="font-size: 12px; font-weight: bold;">Mã: ${order.code}</div>
           <div style="font-size: 11px;">Ngày: ${order.created_at}</div>
+          <div style="font-size: 11px;">Thu ngân: <strong>${(App.currentUser && App.currentUser.full_name) || 'Quầy thu ngân'}</strong></div>
           <div style="font-size: 11px;">Khách hàng: <strong>${order.customer_name}</strong></div>
         </div>
 

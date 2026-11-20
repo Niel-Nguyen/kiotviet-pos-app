@@ -1,7 +1,7 @@
 /**
  * Main Application Controller for KiotPro POS & Distribution Management
- * Multi-device LAN ready, financial date filtering, store settings configuration,
- * sales returns, and inventory audit.
+ * SaaS Enterprise Grade UI, Mobile Drawer Navigation, Date Filtering,
+ * Sales Returns, and Strict Data Validation.
  */
 
 const App = {
@@ -9,18 +9,38 @@ const App = {
   selectedCustomerForPricing: null,
   dashboardRange: 'today',
   purchaseDraftItems: [],
+  currentUser: null,
+  userPermissions: new Set(),
+  auditPage: 1,
+  auditLimit: 25,
+
+  VIEW_PERMISSIONS: {
+    'users': 'users:manage',
+    'settings': 'settings:manage',
+    'audit': 'audit:view',
+    'reports': 'reports:view',
+    'purchases': 'purchases:view',
+    'cash-flow': 'cash_flow:view',
+    'returns': 'returns:view',
+    'customers': 'customers:view',
+    'suppliers': 'suppliers:view',
+    'products': 'products:view',
+    'pos': 'orders:create',
+    'dashboard': null
+  },
 
   async init() {
     this.setupNavigation();
     this.setupModals();
-    this.loadTopFundSummary();
-    this.navigate('dashboard');
+    await this.initAuth();
 
     // F9 shortcut to switch to POS
     window.addEventListener('keydown', (e) => {
       if (e.key === 'F9') {
         e.preventDefault();
-        this.navigate('pos');
+        if (this.hasPermission('orders:create')) {
+          this.navigate('pos');
+        }
       }
     });
   },
@@ -37,28 +57,37 @@ const App = {
 
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    let icon = 'ℹ️';
-    if (type === 'success') icon = '✅';
-    if (type === 'error') icon = '❌';
-    if (type === 'warning') icon = '⚠️';
+    let iconSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>';
+    if (type === 'success') {
+      iconSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>';
+    } else if (type === 'error') {
+      iconSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" x2="9" y1="9" y2="15"/><line x1="9" x2="15" y1="9" y2="15"/></svg>';
+    } else if (type === 'warning') {
+      iconSvg = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2.5"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>';
+    }
 
-    toast.innerHTML = `<span>${icon}</span> <div>${message}</div>`;
+    toast.innerHTML = `${iconSvg} <div>${message}</div>`;
     container.appendChild(toast);
 
     setTimeout(() => {
       toast.style.opacity = '0';
       toast.style.transform = 'translateX(100%)';
-      toast.style.transition = 'all 0.3s ease';
-      setTimeout(() => toast.remove(), 300);
+      toast.style.transition = 'all 0.25s ease';
+      setTimeout(() => toast.remove(), 250);
     }, 3800);
   },
 
   async loadTopFundSummary() {
     try {
+      if (this.hasPermission && !this.hasPermission('cash_flow:view')) {
+        const elem = document.getElementById('top-fund-balance');
+        if (elem) elem.textContent = '***';
+        return;
+      }
       const stats = await API.getDashboardStats();
       const elem = document.getElementById('top-fund-balance');
-      if (elem && stats.funds) {
-        elem.textContent = this.formatMoney(stats.funds.total_balance);
+      if (elem && stats) {
+        elem.textContent = this.formatMoney(stats.cash_balance !== undefined ? stats.cash_balance : (stats.funds ? stats.funds.total_balance : 0));
       }
     } catch (e) {
       console.warn('Could not load fund balance', e);
@@ -66,14 +95,36 @@ const App = {
   },
 
   setupNavigation() {
+    // Menu items
     const menuLinks = document.querySelectorAll('[data-view]');
+    const sidebar = document.getElementById('app-sidebar');
+    const overlay = document.getElementById('sidebar-overlay');
+    const toggleBtn = document.getElementById('btn-toggle-sidebar');
+
     menuLinks.forEach(link => {
       link.addEventListener('click', (e) => {
         e.preventDefault();
         const view = link.getAttribute('data-view');
         this.navigate(view);
+        if (sidebar && sidebar.classList.contains('open')) {
+          sidebar.classList.remove('open');
+          if (overlay) overlay.classList.remove('active');
+        }
       });
     });
+
+    // Mobile sidebar toggle
+    if (toggleBtn && sidebar && overlay) {
+      toggleBtn.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('active');
+      });
+
+      overlay.addEventListener('click', () => {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+      });
+    }
   },
 
   setupModals() {
@@ -112,10 +163,12 @@ const App = {
       'purchases': 'Quản lý Nhập hàng (Nhà cung cấp)',
       'customers': 'Quản lý Khách hàng & Bảng giá riêng',
       'suppliers': 'Quản lý Nhà cung cấp',
+      'returns': 'Quản lý Khách trả hàng (Đổi trả)',
       'cash-flow': 'Quản lý Sổ quỹ & Dòng tiền',
       'reports': 'Báo cáo doanh thu & Lợi nhuận',
-      'returns': 'Quản lý Khách trả hàng (Đổi trả)',
-      'settings': 'Cài đặt hệ thống & Sao lưu'
+      'settings': 'Cài đặt hệ thống & Sao lưu',
+      'audit': 'Nhật ký hoạt động & Truy vết kiểm toán',
+      'users': 'Quản lý Nhân viên & Phân quyền'
     };
 
     const titleElem = document.getElementById('page-title-text');
@@ -130,6 +183,13 @@ const App = {
     const targetSec = document.getElementById(`view-${viewName}`);
     if (targetSec) {
       targetSec.style.display = 'block';
+
+      // Check permission
+      const requiredPerm = this.VIEW_PERMISSIONS[viewName];
+      if (requiredPerm && !this.hasPermission(requiredPerm)) {
+        targetSec.innerHTML = this.renderAccessDenied(requiredPerm);
+        return;
+      }
     }
 
     this.refreshCurrentView();
@@ -156,17 +216,23 @@ const App = {
       case 'suppliers':
         this.renderSuppliersView();
         break;
+      case 'returns':
+        this.renderReturnsView();
+        break;
       case 'cash-flow':
         this.renderCashFlowView();
         break;
       case 'reports':
         this.renderReportsView();
         break;
-      case 'returns':
-        this.renderReturnsView();
-        break;
       case 'settings':
         this.renderSettingsView();
+        break;
+      case 'audit':
+        this.renderAuditView();
+        break;
+      case 'users':
+        this.renderUsersView();
         break;
     }
   },
@@ -193,11 +259,12 @@ const App = {
       };
 
       container.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
-          <div style="font-size: 0.95rem; font-weight: 600; color: #475569;">
-            Kỳ báo cáo: <span style="color: #0066cc;">${rangeLabels[this.dashboardRange] || 'Hôm nay'}</span>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+          <div style="font-size: 0.88rem; font-weight: 600; color: var(--color-text-muted);">
+            Kỳ phân tích: <span style="color: var(--color-primary);">${rangeLabels[this.dashboardRange] || 'Hôm nay'}</span>
+            ${today.returns_total > 0 ? `<span class="badge-tag badge-amber" style="margin-left: 8px;">Đã trừ trả hàng: ${this.formatMoney(today.returns_total)}</span>` : ''}
           </div>
-          <div style="display: flex; gap: 8px;">
+          <div style="display: flex; gap: 6px;">
             <button class="btn btn-sm ${this.dashboardRange === 'today' ? 'btn-primary' : 'btn-outline'}" onclick="App.setDashboardRange('today')">Hôm nay</button>
             <button class="btn btn-sm ${this.dashboardRange === 'yesterday' ? 'btn-primary' : 'btn-outline'}" onclick="App.setDashboardRange('yesterday')">Hôm qua</button>
             <button class="btn btn-sm ${this.dashboardRange === '7days' ? 'btn-primary' : 'btn-outline'}" onclick="App.setDashboardRange('7days')">7 ngày</button>
@@ -207,68 +274,87 @@ const App = {
 
         <div class="stats-grid">
           <div class="stat-card">
-            <div class="stat-icon icon-blue">💰</div>
+            <div class="stat-icon icon-blue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
             <div class="stat-info">
-              <p>Doanh thu (${rangeLabels[this.dashboardRange]})</p>
+              <p>Doanh thu thuần</p>
               <h3>${this.formatMoney(today.today_revenue || 0)}</h3>
-              <small style="color: #64748b;">${today.today_orders || 0} đơn (Thuần: ${this.formatMoney(today.today_net_revenue || 0)})</small>
+              <small>${today.today_orders || 0} đơn đã hoàn tất</small>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon icon-green">📈</div>
+            <div class="stat-icon icon-green">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+            </div>
             <div class="stat-info">
               <p>Lợi nhuận gộp</p>
-              <h3 style="color: #10b981;">${this.formatMoney(today.today_profit || 0)}</h3>
-              <small style="color: #64748b;">Doanh thu thuần trừ giá vốn</small>
+              <h3 style="color: var(--color-success);">${this.formatMoney(today.today_profit || 0)}</h3>
+              <small>Doanh thu thuần trừ giá vốn</small>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon icon-purple">📦</div>
+            <div class="stat-icon icon-purple">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+            </div>
             <div class="stat-info">
               <p>Giá trị kho hàng (MAC)</p>
               <h3>${this.formatMoney(inv.total_inventory_cost || 0)}</h3>
-              <small style="color: #64748b;">${inv.total_products || 0} mặt hàng (${inv.total_stock_items || 0} tồn)</small>
+              <small>${inv.total_products || 0} sản phẩm (${inv.total_stock_items || 0} tồn)</small>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon icon-amber">👥</div>
+            <div class="stat-icon icon-amber">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
             <div class="stat-info">
-              <p>Khách nợ phải thu</p>
-              <h3 style="color: #d97706;">${this.formatMoney(debt.receivables || 0)}</h3>
-              <small style="color: #64748b;">Tổng công nợ khách</small>
+              <p>Công nợ phải thu</p>
+              <h3 style="color: var(--color-warning);">${this.formatMoney(debt.receivables || 0)}</h3>
+              <small>Nợ từ khách mua hàng</small>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon icon-red">🏭</div>
+            <div class="stat-icon icon-red">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/></svg>
+            </div>
             <div class="stat-info">
               <p>Nợ phải trả NCC</p>
-              <h3 style="color: #dc2626;">${this.formatMoney(debt.payables || 0)}</h3>
-              <small style="color: #64748b;">Công nợ nhà cung cấp</small>
+              <h3 style="color: var(--color-danger);">${this.formatMoney(debt.payables || 0)}</h3>
+              <small>Công nợ nguồn hàng</small>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-icon icon-blue">🏦</div>
+            <div class="stat-icon icon-blue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
+            </div>
             <div class="stat-info">
-              <p>Tổng tiền mặt & quỹ</p>
-              <h3 style="color: #0066cc;">${this.formatMoney(funds.total_balance || 0)}</h3>
-              <small style="color: #64748b;">TM: ${this.formatMoney(funds.cash_balance || 0)} | NH: ${this.formatMoney(funds.bank_balance || 0)}</small>
+              <p>Số dư quỹ tiền</p>
+              <h3 style="color: var(--color-primary);">${this.formatMoney(funds.total_balance || 0)}</h3>
+              <small>TM: ${this.formatMoney(funds.cash_balance || 0)} | NH: ${this.formatMoney(funds.bank_balance || 0)}</small>
             </div>
           </div>
         </div>
 
-        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 18px;">
           <!-- 7-Day Revenue Trend Chart -->
           <div class="card">
             <div class="card-header">
-              <div class="card-title">📊 Xu hướng Doanh thu & Lợi nhuận (7 ngày qua)</div>
+              <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg>
+                <span>Biểu đồ Doanh thu & Lợi nhuận (7 ngày gần nhất)</span>
+              </div>
+              <div style="display: flex; gap: 12px; font-size: 0.75rem;">
+                <span style="display: inline-flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; background-color: var(--color-primary); border-radius: 2px;"></span> Doanh thu</span>
+                <span style="display: inline-flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; background-color: var(--color-success); border-radius: 2px;"></span> Lợi nhuận</span>
+              </div>
             </div>
             <div class="card-body">
-              <div style="height: 260px; display: flex; align-items: flex-end; gap: 18px; padding-top: 30px;">
+              <div style="height: 240px; display: flex; align-items: flex-end; gap: 14px; padding-top: 20px;">
                 ${this.renderBarChart(data.revenue_trend || [])}
               </div>
             </div>
@@ -277,31 +363,34 @@ const App = {
           <!-- Top Selling Products -->
           <div class="card">
             <div class="card-header">
-              <div class="card-title">🔥 Top sản phẩm bán chạy</div>
+              <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v20"/><path d="m17 5-5-3-5 3"/><path d="m17 19-5 3-5-3"/><circle cx="12" cy="12" r="3"/></svg>
+                <span>Top 5 sản phẩm bán chạy</span>
+              </div>
             </div>
             <div class="card-body" style="padding: 0;">
               <table class="table">
                 <thead>
                   <tr>
                     <th>Sản phẩm</th>
-                    <th style="text-align: center;">Đã bán</th>
-                    <th style="text-align: right;">Doanh thu</th>
+                    <th class="text-center">Đã bán</th>
+                    <th class="text-right">Doanh thu</th>
                   </tr>
                 </thead>
                 <tbody>
                   ${(data.top_products || []).length > 0 ? (data.top_products || []).map(p => `
                     <tr>
                       <td>
-                        <strong>${p.name}</strong><br>
-                        <small style="color: #94a3b8;">${p.code}</small>
+                        <strong style="color: var(--color-text-main);">${p.name}</strong><br>
+                        <small style="color: var(--color-text-subtle);">${p.code}</small>
                       </td>
-                      <td style="text-align: center;">
+                      <td class="text-center">
                         <span class="badge-tag badge-blue">${p.total_quantity} ${p.unit}</span>
                       </td>
-                      <td style="text-align: right; font-weight: 600;">${this.formatMoney(p.total_sales)}</td>
+                      <td class="text-right tabular-nums font-bold">${this.formatMoney(p.total_sales)}</td>
                     </tr>
                   `).join('') : `
-                    <tr><td colspan="3" style="text-align: center; color: #94a3b8; padding: 20px;">Chưa có dữ liệu bán hàng</td></tr>
+                    <tr><td colspan="3" class="empty-state">Chưa có dữ liệu giao dịch</td></tr>
                   `}
                 </tbody>
               </table>
@@ -311,54 +400,57 @@ const App = {
 
         <!-- Low Stock Warning List -->
         <div class="card">
-          <div class="card-header" style="background-color: #fef2f2;">
-            <div class="card-title" style="color: #991b1b;">
-              ⚠️ Cảnh báo hàng sắp hết tồn kho (${(data.low_stock || []).length})
+          <div class="card-header" style="background-color: var(--color-danger-subtle); border-color: var(--color-danger-border);">
+            <div class="card-title" style="color: var(--color-danger-text);">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+              <span>Cảnh báo tồn kho an toàn (${(data.low_stock || []).length})</span>
             </div>
             <button class="btn btn-sm btn-primary" onclick="App.openCreatePurchaseModal()">+ Nhập hàng ngay</button>
           </div>
           <div class="card-body" style="padding: 0;">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Mã SP</th>
-                  <th>Tên sản phẩm</th>
-                  <th>Danh mục</th>
-                  <th style="text-align: center;">Tồn kho hiện tại</th>
-                  <th style="text-align: center;">Tồn tối thiểu</th>
-                  <th>Giá vốn (MAC)</th>
-                  <th>Giá bán</th>
-                  <th style="text-align: right;">Hành động</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${(data.low_stock || []).length > 0 ? (data.low_stock || []).map(p => `
+            <div class="table-responsive">
+              <table class="table">
+                <thead>
                   <tr>
-                    <td><code>${p.code}</code></td>
-                    <td><strong>${p.name}</strong></td>
-                    <td>${p.category || 'Chung'}</td>
-                    <td style="text-align: center;">
-                      <span class="badge-tag badge-red" style="font-size: 0.85rem;">
-                        ${p.stock} ${p.unit}
-                      </span>
-                    </td>
-                    <td style="text-align: center;">${p.min_stock} ${p.unit}</td>
-                    <td>${this.formatMoney(p.cost_price)}</td>
-                    <td style="font-weight: 600; color: #0066cc;">${this.formatMoney(p.sale_price)}</td>
-                    <td style="text-align: right;">
-                      <button class="btn btn-sm btn-success" onclick="App.openCreatePurchaseForProduct(${p.id})">Nhập hàng</button>
-                    </td>
+                    <th>Mã SP</th>
+                    <th>Tên sản phẩm</th>
+                    <th>Danh mục</th>
+                    <th class="text-center">Tồn thực tế</th>
+                    <th class="text-center">Tồn tối thiểu</th>
+                    <th class="text-right">Giá vốn MAC</th>
+                    <th class="text-right">Giá bán</th>
+                    <th class="text-right">Thao tác</th>
                   </tr>
-                `).join('') : `
-                  <tr><td colspan="8" style="text-align: center; color: #10b981; padding: 20px;">Tất cả mặt hàng đều đảm bảo mức tồn an toàn!</td></tr>
-                `}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  ${(data.low_stock || []).length > 0 ? (data.low_stock || []).map(p => `
+                    <tr>
+                      <td><code>${p.code}</code></td>
+                      <td><strong>${p.name}</strong></td>
+                      <td><span class="badge-tag badge-blue">${p.category || 'Chung'}</span></td>
+                      <td class="text-center">
+                        <span class="badge-tag badge-red">
+                          ${p.stock} ${p.unit}
+                        </span>
+                      </td>
+                      <td class="text-center text-subtle">${p.min_stock} ${p.unit}</td>
+                      <td class="text-right tabular-nums">${this.formatMoney(p.cost_price)}</td>
+                      <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(p.sale_price)}</td>
+                      <td class="text-right">
+                        <button class="btn btn-sm btn-success" onclick="App.openCreatePurchaseForProduct(${p.id})">Nhập hàng</button>
+                      </td>
+                    </tr>
+                  `).join('') : `
+                    <tr><td colspan="8" class="empty-state" style="color: var(--color-success);">Tất cả mặt hàng đều đảm bảo mức tồn kho an toàn.</td></tr>
+                  `}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       `;
     } catch (err) {
-      container.innerHTML = `<div class="card card-body" style="color: red;">Lỗi tải dữ liệu tổng quan: ${err.message}</div>`;
+      container.innerHTML = `<div class="card card-body" style="color: var(--color-danger);">Lỗi tải dữ liệu tổng quan: ${err.message}</div>`;
     }
   },
 
@@ -368,20 +460,20 @@ const App = {
   },
 
   renderBarChart(trendData) {
-    if (!trendData || trendData.length === 0) return '<div>Chưa có số liệu</div>';
+    if (!trendData || trendData.length === 0) return '<div class="empty-state">Chưa có số liệu</div>';
     const maxVal = Math.max(...trendData.map(d => Math.max(d.revenue, d.profit, 1000000)));
 
     return trendData.map(d => {
-      const revHeight = Math.max(8, (d.revenue / maxVal) * 190);
-      const profitHeight = Math.max(4, (d.profit / maxVal) * 190);
+      const revHeight = Math.max(8, (d.revenue / maxVal) * 180);
+      const profitHeight = Math.max(4, (d.profit / maxVal) * 180);
 
       return `
         <div style="flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end;">
           <div style="display: flex; gap: 4px; align-items: flex-end;">
-            <div style="width: 18px; height: ${revHeight}px; background: linear-gradient(180deg, #0284c7, #0066cc); border-radius: 4px 4px 0 0;" title="Doanh thu: ${this.formatMoney(d.revenue)}"></div>
-            <div style="width: 18px; height: ${profitHeight}px; background: linear-gradient(180deg, #34d399, #10b981); border-radius: 4px 4px 0 0;" title="Lợi nhuận: ${this.formatMoney(d.profit)}"></div>
+            <div style="width: 14px; height: ${revHeight}px; background-color: var(--color-primary); border-radius: 3px 3px 0 0;" title="Doanh thu: ${this.formatMoney(d.revenue)}"></div>
+            <div style="width: 14px; height: ${profitHeight}px; background-color: var(--color-success); border-radius: 3px 3px 0 0;" title="Lợi nhuận: ${this.formatMoney(d.profit)}"></div>
           </div>
-          <div style="font-size: 0.72rem; color: #64748b; margin-top: 8px; font-weight: 600;">${d.display_date}</div>
+          <div style="font-size: 0.72rem; color: var(--color-text-subtle); margin-top: 6px; font-weight: 600;">${d.display_date}</div>
         </div>
       `;
     }).join('');
@@ -397,12 +489,12 @@ const App = {
     container.innerHTML = `
       <div class="card">
         <div class="card-header">
-          <div style="display: flex; gap: 12px; align-items: center; flex: 1;">
-            <input type="text" id="prod-search-input" class="form-control" style="max-width: 300px;" placeholder="Tìm theo tên, mã SKU, mã vạch...">
-            <select id="prod-cat-filter" class="form-control" style="max-width: 180px;">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="prod-search-input" class="form-control" style="max-width: 280px;" placeholder="Tìm theo tên, mã SKU, mã vạch...">
+            <select id="prod-cat-filter" class="form-control" style="max-width: 170px;">
               <option value="">Tất cả danh mục</option>
             </select>
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 0.88rem; cursor: pointer;">
+            <label style="display: flex; align-items: center; gap: 6px; font-size: 0.84rem; cursor: pointer; color: var(--color-text-muted);">
               <input type="checkbox" id="prod-low-stock-filter"> Cảnh báo tồn kho
             </label>
           </div>
@@ -418,14 +510,14 @@ const App = {
                   <th>Danh mục</th>
                   <th>Đơn vị tính</th>
                   <th>Quy đổi</th>
-                  <th>Giá vốn (MAC)</th>
-                  <th>Giá bán</th>
-                  <th style="text-align: center;">Tồn kho</th>
-                  <th style="text-align: right;">Hành động</th>
+                  <th class="text-right">Giá vốn (MAC)</th>
+                  <th class="text-right">Giá bán</th>
+                  <th class="text-center">Tồn kho</th>
+                  <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="products-table-body">
-                <tr><td colspan="9" style="text-align: center; padding: 20px;">Đang tải hàng hóa...</td></tr>
+                <tr><td colspan="9" class="empty-state">Đang tải danh mục hàng hóa...</td></tr>
               </tbody>
             </table>
           </div>
@@ -464,7 +556,7 @@ const App = {
       if (!tbody) return;
 
       if (products.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #94a3b8; padding: 30px;">Không tìm thấy hàng hóa</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Không tìm thấy hàng hóa phù hợp</td></tr>`;
         return;
       }
 
@@ -472,27 +564,27 @@ const App = {
         <tr>
           <td>
             <strong>${p.code}</strong><br>
-            <small style="color: #94a3b8; font-family: monospace;">${p.barcode || '---'}</small>
+            <small style="color: var(--color-text-subtle); font-family: var(--font-mono);">${p.barcode || '---'}</small>
           </td>
           <td>
-            <div style="font-weight: 600; color: #0f172a;">${p.name}</div>
+            <div style="font-weight: 600; color: var(--color-text-main);">${p.name}</div>
           </td>
           <td><span class="badge-tag badge-blue">${p.category || 'Chung'}</span></td>
           <td><strong>${p.unit}</strong></td>
           <td>
-            ${p.sub_unit ? `<small style="color: #475569;">1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit}</small>` : '<span style="color: #94a3b8;">---</span>'}
+            ${p.sub_unit ? `<small style="color: var(--color-text-muted);">1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit}</small>` : '<span style="color: var(--color-text-disabled);">---</span>'}
           </td>
-          <td>${this.formatMoney(p.cost_price)}</td>
-          <td style="font-weight: 700; color: #0066cc;">${this.formatMoney(p.sale_price)}</td>
-          <td style="text-align: center;">
-            <span class="badge-tag ${p.stock <= p.min_stock ? 'badge-red' : 'badge-green'}" style="font-size: 0.85rem;">
+          <td class="text-right tabular-nums">${this.formatMoney(p.cost_price)}</td>
+          <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(p.sale_price)}</td>
+          <td class="text-center">
+            <span class="badge-tag ${p.stock <= p.min_stock ? 'badge-red' : 'badge-green'}">
               ${p.stock}
             </span>
           </td>
-          <td style="text-align: right;">
-            <button class="btn btn-sm btn-outline" onclick="App.openStockLogsModal(${p.id})" title="Thẻ kho">📋 Thẻ kho</button>
-            <button class="btn btn-sm btn-outline" onclick="App.openAdjustStockModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.stock})" title="Kiểm kho">⚖️ Kiểm kho</button>
-            <button class="btn btn-sm btn-primary" onclick="App.openEditProductModal(${p.id})" title="Sửa">✏️</button>
+          <td class="text-right">
+            <button class="btn btn-sm btn-outline" onclick="App.openStockLogsModal(${p.id})" title="Thẻ kho">Thẻ kho</button>
+            <button class="btn btn-sm btn-outline" onclick="App.openAdjustStockModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.stock})" title="Kiểm kho">Kiểm kho</button>
+            <button class="btn btn-sm btn-outline" onclick="App.openEditProductModal(${p.id})" title="Sửa">Sửa</button>
           </td>
         </tr>
       `).join('');
@@ -587,13 +679,13 @@ const App = {
   async openStockLogsModal(productId) {
     const modal = document.getElementById('stock-logs-modal');
     const tbody = document.getElementById('stock-logs-tbody');
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Đang tải thẻ kho...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Đang tải thẻ kho...</td></tr>';
     modal.classList.add('active');
 
     try {
       const logs = await API.getProductLogs(productId);
       if (logs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #94a3b8; padding: 20px;">Chưa có biến động kho</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Chưa có biến động kho</td></tr>';
         return;
       }
 
@@ -611,16 +703,16 @@ const App = {
             <td>${l.created_at}</td>
             <td><strong>${l.reference_code || '---'}</strong></td>
             <td>${typeBadge}</td>
-            <td style="text-align: center; font-weight: 700; color: ${l.change_qty >= 0 ? '#10b981' : '#ef4444'};">
+            <td class="text-center font-bold tabular-nums" style="color: ${l.change_qty >= 0 ? 'var(--color-success)' : 'var(--color-danger)'};">
               ${l.change_qty >= 0 ? '+' : ''}${l.change_qty} ${l.unit || ''}
             </td>
-            <td style="text-align: center;">${l.stock_before} → <strong>${l.stock_after}</strong></td>
-            <td><small style="color: #64748b;">${l.notes || ''}</small></td>
+            <td class="text-center tabular-nums">${l.stock_before} → <strong>${l.stock_after}</strong></td>
+            <td><small style="color: var(--color-text-subtle);">${l.notes || ''}</small></td>
           </tr>
         `;
       }).join('');
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="6" style="color: red; text-align: center;">Lỗi tải thẻ kho: ${err.message}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state" style="color: var(--color-danger);">Lỗi tải thẻ kho: ${err.message}</td></tr>`;
     }
   },
 
@@ -659,7 +751,7 @@ const App = {
   },
 
   // ==========================================
-  // 3. PURCHASES / GOODS RECEIPT VIEW (Input)
+  // 3. PURCHASES VIEW (Goods Receipt)
   // ==========================================
   async renderPurchasesView() {
     const container = document.getElementById('view-purchases');
@@ -668,7 +760,10 @@ const App = {
     container.innerHTML = `
       <div class="card">
         <div class="card-header">
-          <div class="card-title">📥 Danh sách phiếu nhập hàng từ Nhà cung cấp</div>
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>
+            <span>Danh sách phiếu nhập hàng từ Nhà cung cấp</span>
+          </div>
           <button class="btn btn-primary" onclick="App.openCreatePurchaseModal()">+ Tạo phiếu nhập hàng</button>
         </div>
         <div class="card-body" style="padding: 0;">
@@ -679,16 +774,16 @@ const App = {
                   <th>Mã phiếu</th>
                   <th>Thời gian</th>
                   <th>Nhà cung cấp</th>
-                  <th style="text-align: center;">Số mặt hàng</th>
-                  <th style="text-align: right;">Tổng tiền hàng</th>
-                  <th style="text-align: right;">Đã trả NCC</th>
-                  <th style="text-align: right;">Còn nợ</th>
-                  <th style="text-align: center;">Trạng thái</th>
-                  <th style="text-align: right;">Chi tiết</th>
+                  <th class="text-center">Số mặt hàng</th>
+                  <th class="text-right">Tổng tiền hàng</th>
+                  <th class="text-right">Đã trả NCC</th>
+                  <th class="text-right">Còn nợ</th>
+                  <th class="text-center">Trạng thái</th>
+                  <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="purchases-table-body">
-                <tr><td colspan="9" style="text-align: center; padding: 20px;">Đang tải danh sách nhập hàng...</td></tr>
+                <tr><td colspan="9" class="empty-state">Đang tải danh sách nhập hàng...</td></tr>
               </tbody>
             </table>
           </div>
@@ -702,7 +797,7 @@ const App = {
       if (!tbody) return;
 
       if (purchases.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #94a3b8; padding: 30px;">Chưa có phiếu nhập hàng nào</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Chưa có phiếu nhập hàng nào</td></tr>`;
         return;
       }
 
@@ -711,15 +806,15 @@ const App = {
           <td><strong>${p.code}</strong></td>
           <td>${p.created_at}</td>
           <td>${p.supplier_name || 'Nhà cung cấp'}</td>
-          <td style="text-align: center;"><span class="badge-tag badge-blue">${p.item_count} mặt hàng</span></td>
-          <td style="text-align: right; font-weight: 700;">${this.formatMoney(p.final_amount)}</td>
-          <td style="text-align: right; color: #10b981;">${this.formatMoney(p.paid_amount)}</td>
-          <td style="text-align: right; color: ${p.debt_amount > 0 ? '#ef4444' : '#64748b'}; font-weight: ${p.debt_amount > 0 ? '700' : 'normal'};">
+          <td class="text-center"><span class="badge-tag badge-blue">${p.item_count} mặt hàng</span></td>
+          <td class="text-right tabular-nums font-bold">${this.formatMoney(p.final_amount)}</td>
+          <td class="text-right tabular-nums" style="color: var(--color-success);">${this.formatMoney(p.paid_amount)}</td>
+          <td class="text-right tabular-nums font-bold" style="color: ${p.debt_amount > 0 ? 'var(--color-danger)' : 'var(--color-text-subtle)'};">
             ${this.formatMoney(p.debt_amount)}
           </td>
-          <td style="text-align: center;"><span class="badge-tag badge-green">Hoàn thành</span></td>
-          <td style="text-align: right;">
-            <button class="btn btn-sm btn-outline" onclick="App.viewPurchaseDetail(${p.id})">Xem</button>
+          <td class="text-center"><span class="badge-tag badge-green">Hoàn tất</span></td>
+          <td class="text-right">
+            <button class="btn btn-sm btn-outline" onclick="App.viewPurchaseDetail(${p.id})">Chi tiết</button>
           </td>
         </tr>
       `).join('');
@@ -739,7 +834,7 @@ const App = {
       suppliers.forEach(s => {
         const opt = document.createElement('option');
         opt.value = s.id;
-        opt.textContent = `${s.name} (Nợ hiện tại: ${this.formatMoney(s.debt)})`;
+        opt.textContent = `${s.name} (Nợ: ${this.formatMoney(s.debt)})`;
         suppSelect.appendChild(opt);
       });
     } catch (e) {
@@ -788,14 +883,14 @@ const App = {
     if (!container) return;
 
     if (this.purchaseDraftItems.length === 0) {
-      container.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #94a3b8; padding: 20px;">Chưa chọn sản phẩm nhập kho. Nhấn "Thêm sản phẩm" bên dưới.</td></tr>';
+      container.innerHTML = '<tr><td colspan="6" class="empty-state">Chưa chọn sản phẩm nhập kho. Nhấn "+ Thêm sản phẩm nhập kho" bên trên.</td></tr>';
       this.updatePurchaseDraftTotals();
       return;
     }
 
     container.innerHTML = this.purchaseDraftItems.map((item, idx) => `
       <tr>
-        <td><strong>${item.name}</strong><br><small style="color: #94a3b8;">${item.code}</small></td>
+        <td><strong>${item.name}</strong><br><small style="color: var(--color-text-subtle); font-family: var(--font-mono);">${item.code}</small></td>
         <td>${item.unit}</td>
         <td>
           <input type="number" class="form-control" style="width: 80px;" value="${item.quantity}" min="1" onchange="App.updatePurchaseItemQty(${idx}, this.value)">
@@ -803,11 +898,11 @@ const App = {
         <td>
           <input type="number" class="form-control" style="width: 130px;" value="${item.import_price}" min="0" onchange="App.updatePurchaseItemPrice(${idx}, this.value)">
         </td>
-        <td style="font-weight: 700; color: #0066cc;">
+        <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">
           ${this.formatMoney(item.quantity * item.import_price)}
         </td>
         <td>
-          <button class="btn btn-sm btn-outline" onclick="App.removePurchaseItem(${idx})" style="color: red;">✕</button>
+          <button class="btn btn-sm btn-outline" onclick="App.removePurchaseItem(${idx})" style="color: var(--color-danger);">✕</button>
         </td>
       </tr>
     `).join('');
@@ -920,7 +1015,7 @@ const App = {
     container.innerHTML = `
       <div class="card">
         <div class="card-header">
-          <div style="display: flex; gap: 12px; align-items: center; flex: 1;">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
             <input type="text" id="cust-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã khách...">
           </div>
           <button class="btn btn-primary" onclick="App.openCreateCustomerModal()">+ Thêm khách hàng</button>
@@ -934,14 +1029,14 @@ const App = {
                   <th>Tên khách hàng</th>
                   <th>Số điện thoại</th>
                   <th>Nhóm khách</th>
-                  <th style="text-align: right;">Tổng mua</th>
-                  <th style="text-align: right;">Công nợ hiện tại</th>
-                  <th style="text-align: center;">Bảng giá riêng</th>
-                  <th style="text-align: right;">Hành động</th>
+                  <th class="text-right">Tổng mua</th>
+                  <th class="text-right">Công nợ hiện tại</th>
+                  <th class="text-center">Bảng giá riêng</th>
+                  <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="customers-table-body">
-                <tr><td colspan="8" style="text-align: center; padding: 20px;">Đang tải danh sách khách hàng...</td></tr>
+                <tr><td colspan="8" class="empty-state">Đang tải danh sách khách hàng...</td></tr>
               </tbody>
             </table>
           </div>
@@ -961,7 +1056,7 @@ const App = {
       if (!tbody) return;
 
       if (customers.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #94a3b8; padding: 30px;">Không tìm thấy khách hàng</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không tìm thấy khách hàng phù hợp</td></tr>`;
         return;
       }
 
@@ -969,23 +1064,23 @@ const App = {
         <tr>
           <td><strong>${c.code}</strong></td>
           <td>
-            <div style="font-weight: 600; color: #0f172a;">${c.name}</div>
-            <small style="color: #64748b;">${c.address || ''}</small>
+            <div style="font-weight: 600; color: var(--color-text-main);">${c.name}</div>
+            <small style="color: var(--color-text-subtle);">${c.address || ''}</small>
           </td>
           <td>${c.phone || '---'}</td>
           <td><span class="badge-tag badge-purple">${c.group_name || 'Khách lẻ'}</span></td>
-          <td style="text-align: right; font-weight: 600;">${this.formatMoney(c.total_spent)}</td>
-          <td style="text-align: right; color: ${c.debt > 0 ? '#ef4444' : '#10b981'}; font-weight: 700;">
+          <td class="text-right tabular-nums font-bold">${this.formatMoney(c.total_spent)}</td>
+          <td class="text-right tabular-nums font-bold" style="color: ${c.debt > 0 ? 'var(--color-danger)' : 'var(--color-success)'};">
             ${this.formatMoney(c.debt)}
           </td>
-          <td style="text-align: center;">
-            <button class="btn btn-sm btn-outline" style="background-color: #fef9c3; border-color: #facc15; color: #854d0e; font-weight: 700;" onclick="App.openCustomerPricingModal(${c.id}, '${c.name.replace(/'/g, "\\'")}')">
-              ⭐ Bảng giá riêng
+          <td class="text-center">
+            <button class="btn btn-sm btn-outline" style="background-color: #fffbeb; border-color: #fde68a; color: #92400e; font-weight: 600;" onclick="App.openCustomerPricingModal(${c.id}, '${c.name.replace(/'/g, "\\'")}')">
+              Giá riêng
             </button>
           </td>
-          <td style="text-align: right;">
+          <td class="text-right">
             ${c.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPayCustomerDebtModal(${c.id}, '${c.name.replace(/'/g, "\\'")}', ${c.debt})">Thu nợ</button>` : ''}
-            <button class="btn btn-sm btn-outline" onclick="App.openEditCustomerModal(${c.id})">✏️</button>
+            <button class="btn btn-sm btn-outline" onclick="App.openEditCustomerModal(${c.id})">Sửa</button>
           </td>
         </tr>
       `).join('');
@@ -1100,7 +1195,6 @@ const App = {
     }
   },
 
-  // Customer Specific Pricing Modal
   async openCustomerPricingModal(customerId, customerName) {
     this.selectedCustomerForPricing = { id: customerId, name: customerName };
     const modal = document.getElementById('customer-pricing-modal');
@@ -1135,45 +1229,39 @@ const App = {
   async loadCustomerPricesList() {
     if (!this.selectedCustomerForPricing) return;
     const tbody = document.getElementById('cust-pricing-tbody');
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center;">Đang tải bảng giá...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Đang tải bảng giá...</td></tr>';
 
     try {
       const prices = await API.getCustomerPrices(this.selectedCustomerForPricing.id);
       if (prices.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="7" style="text-align: center; color: #94a3b8; padding: 30px;">
-              Khách hàng này chưa có bảng giá riêng. Đang áp dụng giá niêm yết chuẩn.
-            </td>
-          </tr>
-        `;
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Khách hàng này chưa có bảng giá riêng. Đang áp dụng giá niêm yết chuẩn.</td></tr>`;
         return;
       }
 
       tbody.innerHTML = prices.map(p => {
         const diff = p.custom_price - p.default_sale_price;
         const diffText = diff < 0 
-          ? `<span style="color: #10b981; font-weight: 600;">Giảm ${this.formatMoney(Math.abs(diff))}</span>`
-          : (diff > 0 ? `<span style="color: #d97706; font-weight: 600;">Tăng ${this.formatMoney(diff)}</span>` : 'Bằng giá chuẩn');
+          ? `<span style="color: var(--color-success); font-weight: 600;">Giảm ${this.formatMoney(Math.abs(diff))}</span>`
+          : (diff > 0 ? `<span style="color: var(--color-warning); font-weight: 600;">Tăng ${this.formatMoney(diff)}</span>` : 'Bằng giá chuẩn');
 
         return `
           <tr>
             <td><code>${p.product_code}</code></td>
             <td><strong>${p.product_name}</strong></td>
             <td>${p.unit}</td>
-            <td style="color: #94a3b8; text-decoration: line-through;">${this.formatMoney(p.default_sale_price)}</td>
-            <td style="font-weight: 800; color: #0066cc; font-size: 1rem;">
+            <td class="text-right tabular-nums text-subtle" style="text-decoration: line-through;">${this.formatMoney(p.default_sale_price)}</td>
+            <td class="text-right tabular-nums font-bold" style="color: var(--color-primary); font-size: 0.95rem;">
               ${this.formatMoney(p.custom_price)}
             </td>
-            <td>${diffText}<br><small style="color: #64748b;">${p.notes || ''}</small></td>
-            <td style="text-align: right;">
-              <button class="btn btn-sm btn-outline" style="color: red;" onclick="App.deleteCustomerPriceRule(${p.id})">Xóa giá riêng</button>
+            <td>${diffText}<br><small style="color: var(--color-text-subtle);">${p.notes || ''}</small></td>
+            <td class="text-right">
+              <button class="btn btn-sm btn-outline" style="color: var(--color-danger);" onclick="App.deleteCustomerPriceRule(${p.id})">Hủy giá riêng</button>
             </td>
           </tr>
         `;
       }).join('');
     } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="7" style="color: red; text-align: center;">Lỗi tải giá riêng: ${err.message}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="empty-state" style="color: var(--color-danger);">Lỗi tải giá riêng: ${err.message}</td></tr>`;
     }
   },
 
@@ -1229,7 +1317,10 @@ const App = {
     container.innerHTML = `
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🏭 Danh sách Nhà cung cấp</div>
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/></svg>
+            <span>Danh sách Nhà cung cấp nguồn hàng</span>
+          </div>
           <button class="btn btn-primary" onclick="App.openCreateSupplierModal()">+ Thêm Nhà cung cấp</button>
         </div>
         <div class="card-body" style="padding: 0;">
@@ -1241,13 +1332,13 @@ const App = {
                   <th>Tên Nhà cung cấp</th>
                   <th>Số điện thoại</th>
                   <th>Địa chỉ</th>
-                  <th style="text-align: right;">Công nợ phải trả NCC</th>
+                  <th class="text-right">Công nợ phải trả NCC</th>
                   <th>Ghi chú</th>
-                  <th style="text-align: right;">Hành động</th>
+                  <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="suppliers-table-body">
-                <tr><td colspan="7" style="text-align: center; padding: 20px;">Đang tải danh sách...</td></tr>
+                <tr><td colspan="7" class="empty-state">Đang tải danh sách nhà cung cấp...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1261,7 +1352,7 @@ const App = {
       if (!tbody) return;
 
       if (suppliers.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #94a3b8; padding: 30px;">Chưa có nhà cung cấp</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Chưa có nhà cung cấp nào</td></tr>`;
         return;
       }
 
@@ -1271,12 +1362,12 @@ const App = {
           <td><strong>${s.name}</strong></td>
           <td>${s.phone || '---'}</td>
           <td>${s.address || '---'}</td>
-          <td style="text-align: right; color: ${s.debt > 0 ? '#ef4444' : '#10b981'}; font-weight: 700;">
+          <td class="text-right tabular-nums font-bold" style="color: ${s.debt > 0 ? 'var(--color-danger)' : 'var(--color-success)'};">
             ${this.formatMoney(s.debt)}
           </td>
-          <td><small style="color: #64748b;">${s.notes || ''}</small></td>
-          <td style="text-align: right;">
-            ${s.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPaySupplierDebtModal(${s.id}, '${s.name.replace(/'/g, "\\'")}', ${s.debt})">Trả nợ NCC</button>` : ''}
+          <td><small style="color: var(--color-text-subtle);">${s.notes || ''}</small></td>
+          <td class="text-right">
+            ${s.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPaySupplierDebtModal(${s.id}, '${s.name.replace(/'/g, "\\'")}', ${s.debt})">Trả nợ</button>` : ''}
             <button class="btn btn-sm btn-primary" onclick="App.openCreatePurchaseModal()">Nhập hàng</button>
           </td>
         </tr>
@@ -1358,277 +1449,7 @@ const App = {
   },
 
   // ==========================================
-  // 6. CASH FLOW VIEW (Sổ quỹ & Dòng tiền)
-  // ==========================================
-  async renderCashFlowView() {
-    const container = document.getElementById('view-cash-flow');
-    if (!container) return;
-
-    container.innerHTML = `
-      <div id="cash-flow-summary-cards" class="stats-grid" style="grid-template-columns: repeat(4, 1fr);">
-      </div>
-
-      <div class="card">
-        <div class="card-header">
-          <div style="display: flex; gap: 12px; align-items: center; flex: 1;">
-            <select id="cf-type-filter" class="form-control" style="max-width: 160px;">
-              <option value="all">Tất cả thu / chi</option>
-              <option value="receipt">Phiếu thu (+)</option>
-              <option value="payment">Phiếu chi (-)</option>
-            </select>
-            <select id="cf-fund-filter" class="form-control" style="max-width: 180px;">
-              <option value="all">Tất cả tài khoản quỹ</option>
-              <option value="cash">Tiền mặt tại quầy</option>
-              <option value="bank">Tài khoản ngân hàng</option>
-            </select>
-          </div>
-          <div style="display: flex; gap: 10px;">
-            <button class="btn btn-success" onclick="App.openCreateCashFlowModal('receipt')">+ Lập Phiếu Thu</button>
-            <button class="btn btn-danger" onclick="App.openCreateCashFlowModal('payment')">- Lập Phiếu Chi</button>
-          </div>
-        </div>
-        <div class="card-body" style="padding: 0;">
-          <div class="table-responsive">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Mã phiếu</th>
-                  <th>Thời gian</th>
-                  <th>Loại phiếu</th>
-                  <th>Hạng mục thu/chi</th>
-                  <th>Đối tượng</th>
-                  <th>Hình thức</th>
-                  <th style="text-align: right;">Số tiền</th>
-                  <th>Ghi chú</th>
-                </tr>
-              </thead>
-              <tbody id="cash-flow-tbody">
-                <tr><td colspan="8" style="text-align: center; padding: 20px;">Đang tải sổ quỹ...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    `;
-
-    document.getElementById('cf-type-filter').addEventListener('change', () => this.loadCashFlowData());
-    document.getElementById('cf-fund-filter').addEventListener('change', () => this.loadCashFlowData());
-    this.loadCashFlowData();
-  },
-
-  async loadCashFlowData() {
-    const type = document.getElementById('cf-type-filter')?.value || 'all';
-    const fund = document.getElementById('cf-fund-filter')?.value || 'all';
-
-    try {
-      const res = await API.getCashFlow({ type, fund });
-      const summary = res.summary || {};
-
-      const summaryCards = document.getElementById('cash-flow-summary-cards');
-      if (summaryCards) {
-        summaryCards.innerHTML = `
-          <div class="stat-card">
-            <div class="stat-icon icon-blue">💰</div>
-            <div class="stat-info">
-              <p>Tồn quỹ hiện tại</p>
-              <h3 style="color: #0066cc;">${this.formatMoney(summary.current_balance)}</h3>
-              <small>Tổng thực thu trừ tổng chi</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-green">📥</div>
-            <div class="stat-info">
-              <p>Tổng thực thu</p>
-              <h3 style="color: #10b981;">${this.formatMoney(summary.total_receipts)}</h3>
-              <small>Bán hàng & thu nợ</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-red">📤</div>
-            <div class="stat-info">
-              <p>Tổng thực chi</p>
-              <h3 style="color: #ef4444;">${this.formatMoney(summary.total_payments)}</h3>
-              <small>Nhập hàng & chi phí</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-purple">🏦</div>
-            <div class="stat-info">
-              <p>Chi tiết quỹ</p>
-              <div style="font-size: 0.85rem; font-weight: 700; margin-top: 4px;">
-                Tiền mặt: ${this.formatMoney(summary.cash_balance)}<br>
-                Ngân hàng: ${this.formatMoney(summary.bank_balance)}
-              </div>
-            </div>
-          </div>
-        `;
-      }
-
-      const tbody = document.getElementById('cash-flow-tbody');
-      if (!tbody) return;
-
-      if (!res.items || res.items.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #94a3b8; padding: 30px;">Không có giao dịch sổ quỹ nào</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = res.items.map(item => `
-        <tr>
-          <td><strong>${item.code}</strong></td>
-          <td>${item.created_at}</td>
-          <td>
-            ${item.type === 'receipt' 
-              ? '<span class="badge-tag badge-green">Phiếu Thu (+)</span>' 
-              : '<span class="badge-tag badge-red">Phiếu Chi (-)</span>'}
-          </td>
-          <td><strong>${item.category}</strong></td>
-          <td>${item.target_name || 'Khác'}</td>
-          <td>
-            <span class="badge-tag ${item.fund_type === 'cash' ? 'badge-blue' : 'badge-purple'}">
-              ${item.fund_type === 'cash' ? '💵 Tiền mặt' : '🏦 Ngân hàng'}
-            </span>
-          </td>
-          <td style="text-align: right; font-weight: 700; color: ${item.type === 'receipt' ? '#10b981' : '#ef4444'};">
-            ${item.type === 'receipt' ? '+' : '-'}${this.formatMoney(item.amount)}
-          </td>
-          <td><small style="color: #64748b;">${item.notes || ''}</small></td>
-        </tr>
-      `).join('');
-    } catch (err) {
-      App.toast('Lỗi tải sổ quỹ: ' + err.message, 'error');
-    }
-  },
-
-  openCreateCashFlowModal(type) {
-    const modal = document.getElementById('cash-flow-modal');
-    document.getElementById('cf-modal-type').value = type;
-    document.getElementById('cf-modal-title').textContent = type === 'receipt' ? 'Lập Phiếu Thu tiền (+)' : 'Lập Phiếu Chi tiền (-)';
-    document.getElementById('cf-category').value = type === 'receipt' ? 'Thu khác' : 'Chi chi phí vận hành';
-    document.getElementById('cf-amount').value = '';
-    document.getElementById('cf-target-name').value = '';
-    document.getElementById('cf-notes').value = '';
-    modal.classList.add('active');
-  },
-
-  async saveCashFlowVoucher() {
-    const type = document.getElementById('cf-modal-type').value;
-    const category = document.getElementById('cf-category').value.trim();
-    const amount = parseFloat(document.getElementById('cf-amount').value);
-    const targetName = document.getElementById('cf-target-name').value.trim();
-    const fundType = document.getElementById('cf-fund-type').value;
-    const notes = document.getElementById('cf-notes').value.trim();
-
-    if (isNaN(amount) || amount <= 0) {
-      App.toast('Số tiền phải lớn hơn 0', 'warning');
-      return;
-    }
-
-    try {
-      await API.createCashFlow({
-        type: type,
-        category: category,
-        amount: amount,
-        target_name: targetName || 'Khác',
-        fund_type: fundType,
-        notes: notes
-      });
-      App.toast(`Tạo ${type === 'receipt' ? 'phiếu thu' : 'phiếu chi'} thành công`, 'success');
-      document.getElementById('cash-flow-modal').classList.remove('active');
-      this.loadCashFlowData();
-      this.loadTopFundSummary();
-    } catch (err) {
-      App.toast('Lỗi lưu sổ quỹ: ' + err.message, 'error');
-    }
-  },
-
-  // ==========================================
-  // 7. REPORTS VIEW (Orders History & Revenue)
-  // ==========================================
-  async renderReportsView() {
-    const container = document.getElementById('view-reports');
-    if (!container) return;
-
-    container.innerHTML = `
-      <div class="card">
-        <div class="card-header">
-          <div class="card-title">🧾 Lịch sử Hóa đơn Bán ra (Doanh thu & Lợi nhuận)</div>
-        </div>
-        <div class="card-body" style="padding: 0;">
-          <div class="table-responsive">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Mã đơn</th>
-                  <th>Thời gian</th>
-                  <th>Khách hàng</th>
-                  <th style="text-align: right;">Tiền hàng</th>
-                  <th style="text-align: right;">Giảm giá</th>
-                  <th style="text-align: right;">Thuế VAT</th>
-                  <th style="text-align: right;">Khách cần trả</th>
-                  <th style="text-align: right;">Khách trả</th>
-                  <th style="text-align: right;">Ghi nợ</th>
-                  <th style="text-align: right;">Lợi nhuận gộp</th>
-                  <th style="text-align: right;">Hành động</th>
-                </tr>
-              </thead>
-              <tbody id="orders-report-tbody">
-                <tr><td colspan="11" style="text-align: center; padding: 20px;">Đang tải đơn hàng...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    `;
-
-    try {
-      const orders = await API.getOrders();
-      const tbody = document.getElementById('orders-report-tbody');
-      if (!tbody) return;
-
-      if (orders.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: #94a3b8; padding: 30px;">Chưa có đơn hàng nào</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = orders.map(o => `
-        <tr>
-          <td><strong>${o.code}</strong></td>
-          <td>${o.created_at}</td>
-          <td><strong>${o.customer_name || 'Khách lẻ'}</strong></td>
-          <td style="text-align: right;">${this.formatMoney(o.total_amount)}</td>
-          <td style="text-align: right; color: #b91c1c;">${o.discount > 0 ? '-' + this.formatMoney(o.discount) : '0 đ'}</td>
-          <td style="text-align: right; color: #64748b;">${o.vat_amount > 0 ? this.formatMoney(o.vat_amount) : '0 đ'}</td>
-          <td style="text-align: right; font-weight: 700; color: #0066cc;">${this.formatMoney(o.final_amount)}</td>
-          <td style="text-align: right; color: #10b981;">${this.formatMoney(o.paid_amount)}</td>
-          <td style="text-align: right; color: ${o.debt_amount > 0 ? '#ef4444' : '#64748b'}; font-weight: ${o.debt_amount > 0 ? '700' : 'normal'};">
-            ${this.formatMoney(o.debt_amount)}
-          </td>
-          <td style="text-align: right; font-weight: 700; color: #10b981;">
-            +${this.formatMoney(o.profit)}
-          </td>
-          <td style="text-align: right;">
-            <button class="btn btn-sm btn-outline" onclick="App.viewOrderDetail(${o.id})">Xem</button>
-          </td>
-        </tr>
-      `).join('');
-    } catch (err) {
-      App.toast('Lỗi tải báo cáo: ' + err.message, 'error');
-    }
-  },
-
-  async viewOrderDetail(orderId) {
-    try {
-      const o = await API.getOrder(orderId);
-      alert(`ĐƠN HÀNG ${o.code}\n\nKhách: ${o.customer_name}\nThời gian: ${o.created_at}\nTổng tiền hàng: ${this.formatMoney(o.total_amount)}\nGiảm giá: ${this.formatMoney(o.discount)}\nThuế VAT: ${this.formatMoney(o.vat_amount)}\nKhách cần trả: ${this.formatMoney(o.final_amount)}\nTiền khách đưa: ${this.formatMoney(o.customer_paid)}\nĐã thanh toán: ${this.formatMoney(o.paid_amount)}\nTiền thừa thối lại: ${this.formatMoney(o.change_amount)}\nCòn ghi nợ: ${this.formatMoney(o.debt_amount)}\nLợi nhuận gộp đơn: ${this.formatMoney(o.profit)}\n\nChi tiết sản phẩm:\n` +
-        o.items.map(i => `- ${i.product_name}: ${i.quantity} ${i.unit} x ${this.formatMoney(i.sale_price)}${i.is_custom_price ? ' (Giá riêng)' : ''} = ${this.formatMoney(i.subtotal)}`).join('\n')
-      );
-    } catch (e) {
-      App.toast('Không thể tải chi tiết đơn hàng: ' + e.message, 'error');
-    }
-  },
-
-  // ==========================================
-  // 8. SALES RETURNS (Khách đổi trả hàng)
+  // 6. SALES RETURNS VIEW (Khách đổi trả hàng)
   // ==========================================
   async renderReturnsView() {
     const container = document.getElementById('view-returns');
@@ -1637,7 +1458,10 @@ const App = {
     container.innerHTML = `
       <div class="card">
         <div class="card-header">
-          <div class="card-title">🔄 Quản lý Khách Trả Hàng (Hoàn tiền / Giảm trừ nợ)</div>
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+            <span>Quản lý Khách Trả Hàng (Hoàn tiền / Giảm trừ nợ)</span>
+          </div>
           <button class="btn btn-primary" onclick="App.openCreateReturnModal()">+ Lập phiếu trả hàng</button>
         </div>
         <div class="card-body" style="padding: 0;">
@@ -1648,15 +1472,15 @@ const App = {
                   <th>Mã phiếu</th>
                   <th>Thời gian</th>
                   <th>Khách hàng</th>
-                  <th style="text-align: center;">Số mặt hàng</th>
-                  <th style="text-align: right;">Tổng giá trị hàng trả</th>
-                  <th style="text-align: right;">Tiền đã hoàn lại</th>
-                  <th style="text-align: right;">Trừ vào công nợ</th>
-                  <th>Ghi chú</th>
+                  <th class="text-center">Số món</th>
+                  <th class="text-right">Tổng giá trị</th>
+                  <th class="text-right">Tiền hoàn khách</th>
+                  <th class="text-right">Trừ vào nợ cũ</th>
+                  <th>Lý do</th>
                 </tr>
               </thead>
               <tbody id="returns-table-body">
-                <tr><td colspan="8" style="text-align: center; padding: 20px;">Đang tải danh sách trả hàng...</td></tr>
+                <tr><td colspan="8" class="empty-state">Đang tải danh sách trả hàng...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1670,7 +1494,7 @@ const App = {
       if (!tbody) return;
 
       if (returns.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #94a3b8; padding: 30px;">Chưa có phiếu trả hàng nào</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Chưa có phiếu trả hàng nào</td></tr>`;
         return;
       }
 
@@ -1679,11 +1503,11 @@ const App = {
           <td><strong>${r.code}</strong></td>
           <td>${r.created_at}</td>
           <td><strong>${r.customer_name}</strong></td>
-          <td style="text-align: center;"><span class="badge-tag badge-purple">${r.item_count} món</span></td>
-          <td style="text-align: right; font-weight: 700; color: #0066cc;">${this.formatMoney(r.total_amount)}</td>
-          <td style="text-align: right; color: #ef4444; font-weight: 600;">${this.formatMoney(r.refund_amount)}</td>
-          <td style="text-align: right; color: #10b981; font-weight: 600;">${this.formatMoney(r.debt_deduct_amount)}</td>
-          <td><small style="color: #64748b;">${r.notes || ''}</small></td>
+          <td class="text-center"><span class="badge-tag badge-purple">${r.item_count} món</span></td>
+          <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(r.total_amount)}</td>
+          <td class="text-right tabular-nums" style="color: var(--color-danger); font-weight: 600;">${this.formatMoney(r.refund_amount)}</td>
+          <td class="text-right tabular-nums" style="color: var(--color-success); font-weight: 600;">${this.formatMoney(r.debt_deduct_amount)}</td>
+          <td><small style="color: var(--color-text-subtle);">${r.notes || ''}</small></td>
         </tr>
       `).join('');
     } catch (err) {
@@ -1695,20 +1519,18 @@ const App = {
     const modal = document.getElementById('return-modal');
     modal.classList.add('active');
 
-    // Populate customers
     const custSelect = document.getElementById('ret-customer-select');
-    custSelect.innerHTML = '<option value="">Khách lẻ</option>';
+    custSelect.innerHTML = '<option value="">Khách lẻ tại quầy</option>';
     try {
       const custs = await API.getCustomers();
       custs.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
-        opt.textContent = `${c.name} (Nợ hiện tại: ${this.formatMoney(c.debt)})`;
+        opt.textContent = `${c.name} (Nợ: ${this.formatMoney(c.debt)})`;
         custSelect.appendChild(opt);
       });
     } catch (e) {}
 
-    // Populate products
     const prodSelect = document.getElementById('ret-product-select');
     prodSelect.innerHTML = '<option value="">-- Chọn sản phẩm khách trả lại --</option>';
     try {
@@ -1716,7 +1538,7 @@ const App = {
       prods.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.id;
-        opt.textContent = `${p.name} (Giá bán: ${this.formatMoney(p.sale_price)})`;
+        opt.textContent = `${p.name} (Niêm yết: ${this.formatMoney(p.sale_price)})`;
         opt.dataset.price = p.sale_price;
         prodSelect.appendChild(opt);
       });
@@ -1797,6 +1619,287 @@ const App = {
   },
 
   // ==========================================
+  // 7. CASH FLOW VIEW (Sổ quỹ & Dòng tiền)
+  // ==========================================
+  async renderCashFlowView() {
+    const container = document.getElementById('view-cash-flow');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div id="cash-flow-summary-cards" class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));">
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <select id="cf-type-filter" class="form-control" style="max-width: 150px;">
+              <option value="all">Tất cả thu / chi</option>
+              <option value="receipt">Phiếu thu (+)</option>
+              <option value="payment">Phiếu chi (-)</option>
+            </select>
+            <select id="cf-fund-filter" class="form-control" style="max-width: 180px;">
+              <option value="all">Tất cả tài khoản quỹ</option>
+              <option value="cash">Tiền mặt tại quầy</option>
+              <option value="bank">Tài khoản ngân hàng</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-success" onclick="App.openCreateCashFlowModal('receipt')">+ Lập Phiếu Thu</button>
+            <button class="btn btn-danger" onclick="App.openCreateCashFlowModal('payment')">- Lập Phiếu Chi</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Mã phiếu</th>
+                  <th>Thời gian</th>
+                  <th>Loại phiếu</th>
+                  <th>Hạng mục thu/chi</th>
+                  <th>Đối tượng</th>
+                  <th>Hình thức</th>
+                  <th class="text-right">Số tiền</th>
+                  <th>Ghi chú</th>
+                </tr>
+              </thead>
+              <tbody id="cash-flow-tbody">
+                <tr><td colspan="8" class="empty-state">Đang tải sổ quỹ...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('cf-type-filter').addEventListener('change', () => this.loadCashFlowData());
+    document.getElementById('cf-fund-filter').addEventListener('change', () => this.loadCashFlowData());
+    this.loadCashFlowData();
+  },
+
+  async loadCashFlowData() {
+    const type = document.getElementById('cf-type-filter')?.value || 'all';
+    const fund = document.getElementById('cf-fund-filter')?.value || 'all';
+
+    try {
+      const res = await API.getCashFlow({ type, fund });
+      const summary = res.summary || {};
+
+      const summaryCards = document.getElementById('cash-flow-summary-cards');
+      if (summaryCards) {
+        summaryCards.innerHTML = `
+          <div class="stat-card">
+            <div class="stat-icon icon-blue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
+            </div>
+            <div class="stat-info">
+              <p>Tồn quỹ hiện tại</p>
+              <h3 style="color: var(--color-primary);">${this.formatMoney(summary.current_balance)}</h3>
+              <small>Thực thu trừ thực chi</small>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon icon-green">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+            </div>
+            <div class="stat-info">
+              <p>Tổng thực thu</p>
+              <h3 style="color: var(--color-success);">${this.formatMoney(summary.total_receipts)}</h3>
+              <small>Bán hàng & thu nợ</small>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon icon-red">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
+            </div>
+            <div class="stat-info">
+              <p>Tổng thực chi</p>
+              <h3 style="color: var(--color-danger);">${this.formatMoney(summary.total_payments)}</h3>
+              <small>Nhập hàng & chi phí</small>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon icon-purple">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/></svg>
+            </div>
+            <div class="stat-info">
+              <p>Phân loại quỹ</p>
+              <div style="font-size: 0.8rem; font-weight: 700; margin-top: 3px;" class="tabular-nums">
+                TM: ${this.formatMoney(summary.cash_balance)}<br>
+                NH: ${this.formatMoney(summary.bank_balance)}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      const tbody = document.getElementById('cash-flow-tbody');
+      if (!tbody) return;
+
+      if (!res.items || res.items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không có giao dịch sổ quỹ nào</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = res.items.map(item => `
+        <tr>
+          <td><strong>${item.code}</strong></td>
+          <td>${item.created_at}</td>
+          <td>
+            ${item.type === 'receipt' 
+              ? '<span class="badge-tag badge-green">Phiếu Thu (+)</span>' 
+              : '<span class="badge-tag badge-red">Phiếu Chi (-)</span>'}
+          </td>
+          <td><strong>${item.category}</strong></td>
+          <td>${item.target_name || 'Khác'}</td>
+          <td>
+            <span class="badge-tag ${item.fund_type === 'cash' ? 'badge-blue' : 'badge-purple'}">
+              ${item.fund_type === 'cash' ? 'Tiền mặt' : 'Ngân hàng'}
+            </span>
+          </td>
+          <td class="text-right tabular-nums font-bold" style="color: ${item.type === 'receipt' ? 'var(--color-success)' : 'var(--color-danger)'};">
+            ${item.type === 'receipt' ? '+' : '-'}${this.formatMoney(item.amount)}
+          </td>
+          <td><small style="color: var(--color-text-subtle);">${item.notes || ''}</small></td>
+        </tr>
+      `).join('');
+    } catch (err) {
+      App.toast('Lỗi tải sổ quỹ: ' + err.message, 'error');
+    }
+  },
+
+  openCreateCashFlowModal(type) {
+    const modal = document.getElementById('cash-flow-modal');
+    document.getElementById('cf-modal-type').value = type;
+    document.getElementById('cf-modal-title').textContent = type === 'receipt' ? 'Lập Phiếu Thu tiền (+)' : 'Lập Phiếu Chi tiền (-)';
+    document.getElementById('cf-category').value = type === 'receipt' ? 'Thu khác' : 'Chi chi phí vận hành';
+    document.getElementById('cf-amount').value = '';
+    document.getElementById('cf-target-name').value = '';
+    document.getElementById('cf-notes').value = '';
+    modal.classList.add('active');
+  },
+
+  async saveCashFlowVoucher() {
+    const type = document.getElementById('cf-modal-type').value;
+    const category = document.getElementById('cf-category').value.trim();
+    const amount = parseFloat(document.getElementById('cf-amount').value);
+    const targetName = document.getElementById('cf-target-name').value.trim();
+    const fundType = document.getElementById('cf-fund-type').value;
+    const notes = document.getElementById('cf-notes').value.trim();
+
+    if (isNaN(amount) || amount <= 0) {
+      App.toast('Số tiền phải lớn hơn 0', 'warning');
+      return;
+    }
+
+    try {
+      await API.createCashFlow({
+        type: type,
+        category: category,
+        amount: amount,
+        target_name: targetName || 'Khác',
+        fund_type: fundType,
+        notes: notes
+      });
+      App.toast(`Tạo ${type === 'receipt' ? 'phiếu thu' : 'phiếu chi'} thành công`, 'success');
+      document.getElementById('cash-flow-modal').classList.remove('active');
+      this.loadCashFlowData();
+      this.loadTopFundSummary();
+    } catch (err) {
+      App.toast('Lỗi lưu sổ quỹ: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // 8. REPORTS VIEW
+  // ==========================================
+  async renderReportsView() {
+    const container = document.getElementById('view-reports');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/></svg>
+            <span>Lịch sử Hóa đơn Bán ra (Doanh thu & Lợi nhuận gộp)</span>
+          </div>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Mã đơn</th>
+                  <th>Thời gian</th>
+                  <th>Khách hàng</th>
+                  <th class="text-right">Tiền hàng</th>
+                  <th class="text-right">Chiết khấu</th>
+                  <th class="text-right">Thuế VAT</th>
+                  <th class="text-right">Khách cần trả</th>
+                  <th class="text-right">Khách trả</th>
+                  <th class="text-right">Ghi nợ</th>
+                  <th class="text-right">Lợi nhuận gộp</th>
+                  <th class="text-right">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="orders-report-tbody">
+                <tr><td colspan="11" class="empty-state">Đang tải lịch sử đơn hàng...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    try {
+      const orders = await API.getOrders();
+      const tbody = document.getElementById('orders-report-tbody');
+      if (!tbody) return;
+
+      if (orders.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="11" class="empty-state">Chưa có đơn hàng nào</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = orders.map(o => `
+        <tr>
+          <td><strong>${o.code}</strong></td>
+          <td>${o.created_at}</td>
+          <td><strong>${o.customer_name || 'Khách lẻ'}</strong></td>
+          <td class="text-right tabular-nums">${this.formatMoney(o.total_amount)}</td>
+          <td class="text-right tabular-nums" style="color: var(--color-danger);">${o.discount > 0 ? '-' + this.formatMoney(o.discount) : '0 đ'}</td>
+          <td class="text-right tabular-nums text-subtle">${o.vat_amount > 0 ? this.formatMoney(o.vat_amount) : '0 đ'}</td>
+          <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</td>
+          <td class="text-right tabular-nums" style="color: var(--color-success);">${this.formatMoney(o.paid_amount)}</td>
+          <td class="text-right tabular-nums font-bold" style="color: ${o.debt_amount > 0 ? 'var(--color-danger)' : 'var(--color-text-subtle)'};">
+            ${this.formatMoney(o.debt_amount)}
+          </td>
+          <td class="text-right tabular-nums font-bold" style="color: var(--color-success);">
+            +${this.formatMoney(o.profit)}
+          </td>
+          <td class="text-right">
+            <button class="btn btn-sm btn-outline" onclick="App.viewOrderDetail(${o.id})">Chi tiết</button>
+          </td>
+        </tr>
+      `).join('');
+    } catch (err) {
+      App.toast('Lỗi tải báo cáo: ' + err.message, 'error');
+    }
+  },
+
+  async viewOrderDetail(orderId) {
+    try {
+      const o = await API.getOrder(orderId);
+      alert(`ĐƠN HÀNG ${o.code}\n\nKhách: ${o.customer_name}\nThời gian: ${o.created_at}\nTổng tiền hàng: ${this.formatMoney(o.total_amount)}\nChiết khấu: ${this.formatMoney(o.discount)}\nThuế VAT: ${this.formatMoney(o.vat_amount)}\nKhách cần trả: ${this.formatMoney(o.final_amount)}\nTiền khách đưa: ${this.formatMoney(o.customer_paid)}\nĐã thanh toán: ${this.formatMoney(o.paid_amount)}\nTiền thừa thối lại: ${this.formatMoney(o.change_amount)}\nCòn ghi nợ: ${this.formatMoney(o.debt_amount)}\nLợi nhuận gộp đơn: ${this.formatMoney(o.profit)}\n\nChi tiết sản phẩm:\n` +
+        o.items.map(i => `- ${i.product_name}: ${i.quantity} ${i.unit} x ${this.formatMoney(i.sale_price)}${i.is_custom_price ? ' (Giá riêng)' : ''} = ${this.formatMoney(i.subtotal)}`).join('\n')
+      );
+    } catch (e) {
+      App.toast('Không thể tải chi tiết đơn hàng: ' + e.message, 'error');
+    }
+  },
+
+  // ==========================================
   // 9. SETTINGS & SYSTEM BACKUP VIEW
   // ==========================================
   async renderSettingsView() {
@@ -1807,11 +1910,14 @@ const App = {
       const s = await API.getSettings();
 
       container.innerHTML = `
-        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 24px;">
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
           <!-- Store Config Form -->
           <div class="card">
             <div class="card-header">
-              <div class="card-title">⚙️ Cấu hình thông tin Cửa hàng & Hóa đơn</div>
+              <div class="card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <span>Cấu hình Thông tin Cửa hàng & Hóa đơn in</span>
+              </div>
             </div>
             <div class="card-body">
               <div class="form-group">
@@ -1840,46 +1946,51 @@ const App = {
                 <label class="form-label">Lời chào chân trang hóa đơn in:</label>
                 <input type="text" id="cfg-footer" class="form-control" value="${s.invoice_footer || ''}">
               </div>
-              <div class="form-group" style="background: #f8fafc; padding: 12px; border-radius: 6px; border: 1px solid #e2e8f0;">
-                <label style="display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer;">
+              <div class="form-group" style="background: var(--color-surface-muted); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+                <label style="display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; color: var(--color-text-main);">
                   <input type="checkbox" id="cfg-allow-negative" ${s.allow_negative_stock === 'true' ? 'checked' : ''}>
                   Cho phép bán khi hết tồn kho (Âm kho)
                 </label>
-                <small style="color: #64748b; display: block; margin-top: 4px;">
-                  Khi tắt tùy chọn này, hệ thống sẽ chặn nghiêm ngặt không cho thu ngân xuất bán các mặt hàng không còn đủ tồn kho thực tế.
+                <small style="color: var(--color-text-subtle); display: block; margin-top: 4px;">
+                  Khi tắt, hệ thống sẽ chặn nghiêm ngặt không cho xuất bán hàng hóa vượt quá tồn kho thực tế.
                 </small>
               </div>
               <button class="btn btn-primary" onclick="App.saveStoreSettings()">Lưu cấu hình hệ thống</button>
             </div>
           </div>
 
-          <!-- Backup & System Health -->
+          <!-- Backup & LAN Connectivity -->
           <div>
             <div class="card">
               <div class="card-header">
-                <div class="card-title">💾 Sao lưu dữ liệu (Backup)</div>
+                <div class="card-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                  <span>Sao lưu dữ liệu (Backup)</span>
+                </div>
               </div>
               <div class="card-body">
-                <p style="font-size: 0.88rem; color: #475569; margin-bottom: 14px;">
-                  Tải về toàn bộ cơ sở dữ liệu SQLite của cửa hàng bao gồm toàn bộ sản phẩm, bảng giá riêng, khách hàng, đơn hàng, hóa đơn và sổ quỹ.
+                <p style="font-size: 0.84rem; color: var(--color-text-muted); margin-bottom: 12px;">
+                  Tải về cơ sở dữ liệu SQLite của cửa hàng bao gồm hàng hóa, giá riêng, khách hàng, đơn hàng, hóa đơn và sổ quỹ.
                 </p>
                 <a href="/api/backup/download" class="btn btn-success" style="width: 100%; text-decoration: none;" download>
-                  📥 Tải file sao lưu Database (.db)
+                  Tải file sao lưu Database (.db)
                 </a>
               </div>
             </div>
 
             <div class="card">
               <div class="card-header">
-                <div class="card-title">🌐 Kết nối Mạng nội bộ (LAN)</div>
+                <div class="card-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <span>Mạng nội bộ (LAN)</span>
+                </div>
               </div>
-              <div class="card-body" style="font-size: 0.88rem;">
-                <p style="color: #475569; margin-bottom: 8px;">
-                  Hệ thống đang chạy chế độ <strong>Multi-threaded</strong> sẵn sàng cho nhiều quầy thu ngân và nhân viên truy cập cùng lúc qua Wi-Fi nội bộ.
+              <div class="card-body" style="font-size: 0.84rem;">
+                <p style="color: var(--color-text-muted); margin-bottom: 8px;">
+                  Hệ thống đa luồng (Multi-threaded) sẵn sàng cho nhiều quầy thu ngân và nhân viên truy cập cùng lúc qua Wi-Fi.
                 </p>
-                <div style="background: #f1f5f9; padding: 10px; border-radius: 6px; font-family: monospace;">
-                  Cổng kết nối: <strong>8080</strong><br>
-                  Máy chủ: <strong>0.0.0.0</strong>
+                <div style="background: var(--color-surface-muted); padding: 8px 10px; border-radius: var(--radius-sm); font-family: var(--font-mono); border: 1px solid var(--color-border);">
+                  Port: <strong>8080</strong> | Bind: <strong>0.0.0.0</strong>
                 </div>
               </div>
             </div>
@@ -1887,7 +1998,7 @@ const App = {
         </div>
       `;
     } catch (err) {
-      container.innerHTML = `<div class="card card-body" style="color: red;">Lỗi tải cài đặt: ${err.message}</div>`;
+      container.innerHTML = `<div class="card card-body" style="color: var(--color-danger);">Lỗi tải cài đặt: ${err.message}</div>`;
     }
   },
 
@@ -1908,6 +2019,787 @@ const App = {
     } catch (err) {
       App.toast('Lỗi lưu cài đặt: ' + err.message, 'error');
     }
+  },
+
+  // ==========================================
+  // AUTHENTICATION & ACCESS CONTROL (RBAC)
+  // ==========================================
+  hasPermission(perm) {
+    if (!perm) return true;
+    if (!this.currentUser) return false;
+    if (this.currentUser.role === 'admin') return true;
+    return this.userPermissions && this.userPermissions.has(perm);
+  },
+
+  getRoleName(role) {
+    const map = {
+      'admin': 'Quản trị viên',
+      'manager': 'Quản lý',
+      'cashier': 'Thu ngân',
+      'warehouse': 'Kho',
+      'accountant': 'Kế toán',
+      'viewer': 'Chỉ xem'
+    };
+    return map[role] || role;
+  },
+
+  getRoleBadgeClass(role) {
+    const map = {
+      'admin': 'badge-purple',
+      'manager': 'badge-blue',
+      'cashier': 'badge-green',
+      'warehouse': 'badge-amber',
+      'accountant': 'badge-blue',
+      'viewer': 'badge-tag'
+    };
+    return map[role] || 'badge-tag';
+  },
+
+  renderAccessDenied(requiredPerm) {
+    const roleName = this.currentUser ? this.getRoleName(this.currentUser.role) : 'Khách';
+    const fullName = this.currentUser ? this.currentUser.full_name : 'Người dùng';
+    return `
+      <div class="empty-state" style="padding: 60px 20px;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-danger)" stroke-width="2" class="empty-state-icon">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
+        <div style="font-weight: 700; font-size: 1.15rem; color: var(--color-text); margin: 12px 0 6px;">Không có quyền truy cập</div>
+        <div style="font-size: 0.875rem; color: var(--color-text-secondary); max-width: 480px; margin: 0 auto 18px; line-height: 1.5;">
+          Tài khoản của bạn (<strong>${fullName}</strong> - Vai trò: <strong>${roleName}</strong>) không được phân quyền thực hiện chức năng này (${requiredPerm}). Vui lòng liên hệ Quản trị viên hệ thống để được cấp quyền.
+        </div>
+        <button class="btn btn-primary" onclick="App.navigate('dashboard')">Quay lại Tổng quan</button>
+      </div>
+    `;
+  },
+
+  async initAuth() {
+    try {
+      const bs = await API.getBootstrapStatus();
+      if (bs.need_bootstrap) {
+        this.showAuthModal(true);
+        return;
+      }
+
+      const me = await API.getMe();
+      this.currentUser = me.user;
+      this.userPermissions = new Set(me.permissions || []);
+      this.updateUserUI();
+      this.applyRolePermissions();
+      this.hideAuthModal();
+      this.navigate('dashboard');
+    } catch (err) {
+      console.warn("Chưa đăng nhập:", err.message);
+      this.currentUser = null;
+      this.userPermissions = new Set();
+      this.showAuthModal(false);
+    }
+  },
+
+  showAuthModal(isBootstrap = false) {
+    const modal = document.getElementById('auth-modal');
+    const bsContainer = document.getElementById('auth-bootstrap-container');
+    const loginContainer = document.getElementById('auth-login-container');
+
+    if (!modal) return;
+    if (isBootstrap) {
+      if (bsContainer) bsContainer.style.display = 'block';
+      if (loginContainer) loginContainer.style.display = 'none';
+    } else {
+      if (bsContainer) bsContainer.style.display = 'none';
+      if (loginContainer) loginContainer.style.display = 'block';
+    }
+    modal.classList.add('active');
+  },
+
+  hideAuthModal() {
+    const modal = document.getElementById('auth-modal');
+    if (modal) modal.classList.remove('active');
+  },
+
+  updateUserUI() {
+    if (!this.currentUser) return;
+    const nameElem = document.getElementById('user-display-name');
+    const roleElem = document.getElementById('user-role-badge');
+    const initialsElem = document.getElementById('user-avatar-initials');
+
+    if (nameElem) nameElem.textContent = this.currentUser.full_name;
+    if (roleElem) {
+      const cls = this.getRoleBadgeClass(this.currentUser.role);
+      const title = this.getRoleName(this.currentUser.role);
+      roleElem.innerHTML = `<span class="badge ${cls}" style="font-size: 0.65rem; padding: 1px 5px;">${title}</span>`;
+    }
+    if (initialsElem) {
+      const parts = this.currentUser.full_name.trim().split(' ');
+      const initials = parts.length > 1
+        ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+        : this.currentUser.full_name.slice(0, 2).toUpperCase();
+      initialsElem.textContent = initials;
+    }
+  },
+
+  applyRolePermissions() {
+    if (!this.currentUser) return;
+    document.querySelectorAll('.menu-item[data-view]').forEach(item => {
+      const v = item.getAttribute('data-view');
+      const perm = this.VIEW_PERMISSIONS[v];
+      if (perm && !this.hasPermission(perm)) {
+        item.style.display = 'none';
+      } else {
+        item.style.display = 'flex';
+      }
+    });
+
+    const quickPosBtn = document.getElementById('btn-quick-pos');
+    if (quickPosBtn) {
+      quickPosBtn.style.display = this.hasPermission('orders:create') ? 'inline-flex' : 'none';
+    }
+
+    const fundPill = document.getElementById('top-fund-container');
+    if (fundPill) {
+      fundPill.style.display = this.hasPermission('cash_flow:view') ? 'flex' : 'none';
+    }
+  },
+
+  async handleLoginSubmit(e) {
+    e.preventDefault();
+    const u = document.getElementById('login-username')?.value.trim();
+    const p = document.getElementById('login-password')?.value;
+    const errElem = document.getElementById('login-error-msg');
+    const btn = document.getElementById('btn-login-submit');
+
+    if (errElem) errElem.style.display = 'none';
+    if (btn) btn.disabled = true;
+
+    try {
+      const res = await API.login({ username: u, password: p });
+      API.setToken(res.token);
+      this.toast(`Chào mừng ${res.user.full_name} đã đăng nhập!`, 'success');
+      await this.initAuth();
+    } catch (err) {
+      if (errElem) {
+        errElem.textContent = err.message || 'Đăng nhập không thành công';
+        errElem.style.display = 'block';
+      } else {
+        this.toast(err.message, 'error');
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  },
+
+  async handleBootstrapSubmit(e) {
+    e.preventDefault();
+    const u = document.getElementById('bs-username')?.value.trim();
+    const fn = document.getElementById('bs-fullname')?.value.trim();
+    const p = document.getElementById('bs-password')?.value;
+    const cp = document.getElementById('bs-confirm-password')?.value;
+
+    if (p !== cp) {
+      this.toast('Mật khẩu và xác nhận mật khẩu không khớp', 'warning');
+      return;
+    }
+
+    try {
+      const res = await API.bootstrap({ username: u, full_name: fn, password: p });
+      API.setToken(res.token);
+      this.toast('Khởi tạo tài khoản Quản trị viên thành công!', 'success');
+      await this.initAuth();
+    } catch (err) {
+      this.toast('Lỗi khởi tạo: ' + err.message, 'error');
+    }
+  },
+
+  async logout() {
+    if (!confirm('Bạn có chắc chắn muốn đăng xuất khỏi hệ thống?')) return;
+    try {
+      await API.logout();
+    } catch (e) {
+      // Ignore
+    }
+    API.setToken('');
+    this.currentUser = null;
+    this.userPermissions = new Set();
+    this.toast('Đã đăng xuất khỏi hệ thống', 'info');
+    this.showAuthModal(false);
+  },
+
+  openSelfPasswordModal() {
+    const modal = document.getElementById('user-self-password-modal');
+    if (modal) {
+      document.getElementById('sp-old-password').value = '';
+      document.getElementById('sp-new-password').value = '';
+      document.getElementById('sp-confirm-password').value = '';
+      modal.classList.add('active');
+    }
+  },
+
+  async saveSelfPassword(e) {
+    e.preventDefault();
+    const oldP = document.getElementById('sp-old-password').value;
+    const newP = document.getElementById('sp-new-password').value;
+    const confP = document.getElementById('sp-confirm-password').value;
+
+    if (newP !== confP) {
+      this.toast('Mật khẩu mới và xác nhận mật khẩu không khớp', 'warning');
+      return;
+    }
+
+    try {
+      await API.changePassword({ old_password: oldP, new_password: newP });
+      this.toast('Đổi mật khẩu thành công!', 'success');
+      document.getElementById('user-self-password-modal')?.classList.remove('active');
+    } catch (err) {
+      this.toast(err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // USER MANAGEMENT (Admin only)
+  // ==========================================
+  async renderUsersView() {
+    const container = document.getElementById('view-users');
+    if (!container) return;
+    if (!this.hasPermission('users:manage')) {
+      container.innerHTML = this.renderAccessDenied('users:manage');
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="table-toolbar">
+        <div>
+          <h3 style="font-size: 1.15rem; font-weight: 700; margin: 0;">Danh sách Nhân viên & Phân quyền</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;">
+            Quản lý tài khoản, vai trò bảo mật và thu hồi phiên đăng nhập
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="App.openCreateUserModal()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          Thêm nhân viên mới
+        </button>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 50px;">ID</th>
+              <th>Tên đăng nhập</th>
+              <th>Họ và tên</th>
+              <th>Vai trò</th>
+              <th>Trạng thái</th>
+              <th>Ngày tạo</th>
+              <th>Đăng nhập cuối</th>
+              <th class="text-right" style="width: 260px;">Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="users-table-body">
+            <tr><td colspan="8" class="text-center" style="padding: 30px;">Đang tải danh sách nhân viên...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    try {
+      const users = await API.getUsers();
+      const tbody = document.getElementById('users-table-body');
+      if (!tbody) return;
+
+      if (users.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="padding: 40px;">Chưa có nhân viên nào</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = users.map(u => {
+        const isCurrent = u.id === this.currentUser.id;
+        const statusBadge = u.is_active
+          ? `<span class="badge badge-green">Hoạt động</span>`
+          : `<span class="badge badge-red">Đã khóa</span>`;
+        const roleBadge = `<span class="badge ${this.getRoleBadgeClass(u.role)}">${this.getRoleName(u.role)}</span>`;
+
+        return `
+          <tr>
+            <td style="font-weight: 600;">${u.id}</td>
+            <td><strong>${u.username}</strong> ${isCurrent ? '<span class="badge badge-blue" style="font-size: 0.65rem;">(Bạn)</span>' : ''}</td>
+            <td>${u.full_name}</td>
+            <td>${roleBadge}</td>
+            <td>${statusBadge}</td>
+            <td style="font-size: 0.8125rem; color: var(--color-text-secondary);">${u.created_at || '-'}</td>
+            <td style="font-size: 0.8125rem; color: var(--color-text-secondary);">${u.last_login_at || 'Chưa đăng nhập'}</td>
+            <td class="text-right">
+              <div style="display: inline-flex; gap: 4px;">
+                <button class="btn btn-sm btn-outline" onclick="App.openEditUserModal(${u.id}, '${encodeURIComponent(u.username)}', '${encodeURIComponent(u.full_name)}', '${u.role}')" title="Sửa thông tin">
+                  Sửa
+                </button>
+                <button class="btn btn-sm btn-outline" onclick="App.openResetPasswordModal(${u.id}, '${encodeURIComponent(u.username)}')" title="Đặt lại mật khẩu">
+                  Đổi MK
+                </button>
+                ${!isCurrent ? `
+                  <button class="btn btn-sm ${u.is_active ? 'btn-danger' : 'btn-outline'}" onclick="App.toggleLockUser(${u.id}, ${u.is_active}, '${encodeURIComponent(u.username)}')" title="${u.is_active ? 'Khóa tài khoản' : 'Mở khóa'}">
+                    ${u.is_active ? 'Khóa' : 'Mở'}
+                  </button>
+                  <button class="btn btn-sm btn-outline" onclick="App.revokeUserSessions(${u.id}, '${encodeURIComponent(u.username)}')" title="Thu hồi phiên đăng nhập">
+                    Đăng xuất
+                  </button>
+                ` : ''}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    } catch (err) {
+      App.toast('Không thể tải danh sách nhân viên: ' + err.message, 'error');
+    }
+  },
+
+  openCreateUserModal() {
+    const modal = document.getElementById('user-create-modal');
+    if (!modal) return;
+    document.getElementById('uc-username').value = '';
+    document.getElementById('uc-fullname').value = '';
+    document.getElementById('uc-password').value = '';
+    document.getElementById('uc-role').value = 'cashier';
+    modal.classList.add('active');
+  },
+
+  async saveNewUser(e) {
+    e.preventDefault();
+    const payload = {
+      username: document.getElementById('uc-username').value.trim(),
+      full_name: document.getElementById('uc-fullname').value.trim(),
+      role: document.getElementById('uc-role').value,
+      password: document.getElementById('uc-password').value
+    };
+
+    try {
+      await API.createUser(payload);
+      this.toast(`Tạo tài khoản "${payload.username}" thành công!`, 'success');
+      document.getElementById('user-create-modal')?.classList.remove('active');
+      this.renderUsersView();
+    } catch (err) {
+      this.toast(err.message, 'error');
+    }
+  },
+
+  openEditUserModal(id, encodedUsername, encodedFullname, role) {
+    const modal = document.getElementById('user-edit-modal');
+    if (!modal) return;
+    document.getElementById('ue-id').value = id;
+    document.getElementById('ue-username').value = decodeURIComponent(encodedUsername);
+    document.getElementById('ue-fullname').value = decodeURIComponent(encodedFullname);
+    document.getElementById('ue-role').value = role;
+    modal.classList.add('active');
+  },
+
+  async saveEditUser(e) {
+    e.preventDefault();
+    const id = document.getElementById('ue-id').value;
+    const payload = {
+      full_name: document.getElementById('ue-fullname').value.trim(),
+      role: document.getElementById('ue-role').value
+    };
+
+    try {
+      await API.updateUser(id, payload);
+      this.toast('Cập nhật thông tin nhân viên thành công!', 'success');
+      document.getElementById('user-edit-modal')?.classList.remove('active');
+      this.renderUsersView();
+    } catch (err) {
+      this.toast(err.message, 'error');
+    }
+  },
+
+  openResetPasswordModal(id, encodedUsername) {
+    const modal = document.getElementById('user-password-modal');
+    if (!modal) return;
+    document.getElementById('rp-id').value = id;
+    document.getElementById('rp-username').textContent = decodeURIComponent(encodedUsername);
+    document.getElementById('rp-new-password').value = '';
+    modal.classList.add('active');
+  },
+
+  async saveResetPassword(e) {
+    e.preventDefault();
+    const id = document.getElementById('rp-id').value;
+    const new_password = document.getElementById('rp-new-password').value;
+
+    try {
+      await API.resetUserPassword(id, { new_password });
+      this.toast('Đặt lại mật khẩu thành công! Các phiên cũ đã được thu hồi.', 'success');
+      document.getElementById('user-password-modal')?.classList.remove('active');
+    } catch (err) {
+      this.toast(err.message, 'error');
+    }
+  },
+
+  async toggleLockUser(id, currentActive, encodedUsername) {
+    const u = decodeURIComponent(encodedUsername);
+    const actionName = currentActive ? 'KHÓA' : 'MỞ KHÓA';
+    if (!confirm(`Bạn có chắc muốn ${actionName} tài khoản "${u}" không?`)) return;
+
+    try {
+      if (currentActive) {
+        await API.lockUser(id);
+        this.toast(`Đã khóa tài khoản "${u}". Mọi phiên đăng nhập của người này đã bị hủy.`, 'success');
+      } else {
+        await API.unlockUser(id);
+        this.toast(`Đã mở khóa tài khoản "${u}".`, 'success');
+      }
+      this.renderUsersView();
+    } catch (err) {
+      this.toast(err.message, 'error');
+    }
+  },
+
+  async revokeUserSessions(id, encodedUsername) {
+    const u = decodeURIComponent(encodedUsername);
+    if (!confirm(`Bạn có chắc muốn thu hồi tất cả phiên đăng nhập của "${u}"? Người dùng này sẽ bị buộc đăng xuất ngay lập tức.`)) return;
+
+    try {
+      await API.revokeUserSessions(id);
+      this.toast(`Đã thu hồi phiên của "${u}"!`, 'success');
+    } catch (err) {
+      this.toast(err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // AUDIT TRAIL & ACTIVITY LOG VIEW
+  // ==========================================
+  async renderAuditView(page = 1) {
+    const container = document.getElementById('view-audit');
+    if (!container) return;
+    if (!this.hasPermission('audit:view')) {
+      container.innerHTML = this.renderAccessDenied('audit:view');
+      return;
+    }
+
+    this.auditPage = page;
+
+    container.innerHTML = `
+      <div class="table-toolbar">
+        <div>
+          <h3 style="font-size: 1.15rem; font-weight: 700; margin: 0;">Nhật Ký Hoạt Động & Truy Vết Kiểm Toán</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;">
+            Lưu vết tự động mọi giao dịch bán hàng, kho, quỹ, công nợ và quản trị (Không thể chỉnh sửa/xóa)
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter Bar -->
+      <div class="audit-filter-bar">
+        <div style="flex: 1; min-width: 180px;">
+          <input type="text" id="audit-filter-q" class="form-control" placeholder="Tìm mã chứng từ, người thực hiện...">
+        </div>
+        <div style="width: 160px;">
+          <select id="audit-filter-action" class="form-control">
+            <option value="">Tất cả nghiệp vụ</option>
+            <option value="ORDER_CREATE">Bán hàng (POS)</option>
+            <option value="PURCHASE_CREATE">Nhập hàng</option>
+            <option value="RETURN_CREATE">Khách trả hàng</option>
+            <option value="STOCK_ADJUST">Kiểm kho</option>
+            <option value="CASH_RECEIPT">Thu tiền</option>
+            <option value="CASH_PAYMENT">Chi tiền</option>
+            <option value="DEBT_PAY_CUSTOMER">Thu nợ khách</option>
+            <option value="DEBT_PAY_SUPPLIER">Trả nợ NCC</option>
+            <option value="USER_LOGIN">Đăng nhập</option>
+            <option value="USER_CREATE">Tạo nhân viên</option>
+            <option value="USER_LOCK">Khóa nhân viên</option>
+            <option value="SETTINGS_UPDATE">Cài đặt hệ thống</option>
+          </select>
+        </div>
+        <div style="width: 150px;">
+          <select id="audit-filter-entity" class="form-control">
+            <option value="">Tất cả đối tượng</option>
+            <option value="order">Hóa đơn bán (HD)</option>
+            <option value="purchase">Phiếu nhập (PN)</option>
+            <option value="return">Phiếu trả (TH)</option>
+            <option value="product">Hàng hóa / Kho</option>
+            <option value="cash_flow">Sổ quỹ</option>
+            <option value="customer">Khách hàng</option>
+            <option value="supplier">Nhà cung cấp</option>
+            <option value="user">Người dùng</option>
+          </select>
+        </div>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          <input type="date" id="audit-filter-from" class="form-control" style="width: 135px;">
+          <span>-</span>
+          <input type="date" id="audit-filter-to" class="form-control" style="width: 135px;">
+        </div>
+        <button class="btn btn-primary" onclick="App.filterAuditLogs(1)">Lọc</button>
+        <button class="btn btn-outline" onclick="App.resetAuditFilters()">Đặt lại</button>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width: 140px;">Thời gian</th>
+              <th style="width: 140px;">Người thực hiện</th>
+              <th style="width: 140px;">Hành động</th>
+              <th style="width: 130px;">Chứng từ</th>
+              <th>Chi tiết giao dịch</th>
+              <th style="width: 110px;">Địa chỉ IP</th>
+              <th class="text-right" style="width: 90px;">Timeline</th>
+            </tr>
+          </thead>
+          <tbody id="audit-table-body">
+            <tr><td colspan="7" class="text-center" style="padding: 30px;">Đang tải nhật ký kiểm toán...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="audit-pagination" style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 0.8125rem; color: var(--color-text-secondary);"></div>
+    `;
+
+    this.filterAuditLogs(page);
+  },
+
+  async filterAuditLogs(page = 1) {
+    this.auditPage = page;
+    const tbody = document.getElementById('audit-table-body');
+    const pagination = document.getElementById('audit-pagination');
+    if (!tbody) return;
+
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center" style="padding: 30px;">Đang tải nhật ký kiểm toán...</td></tr>`;
+
+    const q = document.getElementById('audit-filter-q')?.value.trim() || '';
+    const action = document.getElementById('audit-filter-action')?.value || '';
+    const entity_type = document.getElementById('audit-filter-entity')?.value || '';
+    const date_from = document.getElementById('audit-filter-from')?.value || '';
+    const date_to = document.getElementById('audit-filter-to')?.value || '';
+
+    const limit = this.auditLimit || 25;
+    const offset = (page - 1) * limit;
+
+    const params = { limit, offset };
+    if (q) params.q = q;
+    if (action) params.action = action;
+    if (entity_type) params.entity_type = entity_type;
+    if (date_from) params.date_from = date_from;
+    if (date_to) params.date_to = date_to;
+
+    try {
+      const res = await API.getAuditLogs(params);
+      const items = res.items || [];
+      const total = res.total || 0;
+
+      if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="text-center" style="padding: 40px; color: var(--color-text-muted);">Không có bản ghi nhật ký phù hợp với bộ lọc</td></tr>`;
+        if (pagination) pagination.innerHTML = `<div>Tổng cộng: <strong>0</strong> sự kiện</div>`;
+        return;
+      }
+
+      tbody.innerHTML = items.map(l => {
+        const actionInfo = this.formatAuditAction(l.action);
+        let summary = '';
+        if (l.details_parsed && typeof l.details_parsed === 'object') {
+          summary = Object.entries(l.details_parsed).map(([k, v]) => `${this.formatDetailKey(k)}: <strong>${this.formatDetailVal(k, v)}</strong>`).join(' | ');
+        } else {
+          summary = l.details || '';
+        }
+
+        const hasTimeline = l.entity_code || (l.entity_type && l.entity_id);
+
+        return `
+          <tr>
+            <td style="font-size: 0.8125rem; color: var(--color-text-secondary); white-space: nowrap;">${l.created_at}</td>
+            <td><strong style="color: var(--color-primary);">${l.user_name}</strong></td>
+            <td><span class="badge ${actionInfo.badgeClass}">${actionInfo.label}</span></td>
+            <td>
+              ${l.entity_code ? `<span class="badge badge-tag font-bold">${l.entity_code}</span>` : '-'}
+            </td>
+            <td style="font-size: 0.8125rem; line-height: 1.4;">${summary}</td>
+            <td style="font-size: 0.75rem; color: var(--color-text-muted);">${l.ip_address || '-'}</td>
+            <td class="text-right">
+              ${hasTimeline ? `
+                <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('${l.entity_type}', '${l.entity_code || l.entity_id}')" title="Xem chuỗi lịch sử">
+                  Xem
+                </button>
+              ` : '-'}
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      const totalPages = Math.ceil(total / limit) || 1;
+      if (pagination) {
+        pagination.innerHTML = `
+          <div>Hiển thị ${offset + 1} - ${Math.min(offset + limit, total)} trên tổng <strong>${total}</strong> sự kiện</div>
+          <div style="display: flex; gap: 4px;">
+            <button class="btn btn-sm btn-outline" ${page <= 1 ? 'disabled' : ''} onclick="App.filterAuditLogs(${page - 1})">Trước</button>
+            <span style="padding: 4px 8px; font-weight: 600;">Trang ${page} / ${totalPages}</span>
+            <button class="btn btn-sm btn-outline" ${page >= totalPages ? 'disabled' : ''} onclick="App.filterAuditLogs(${page + 1})">Sau</button>
+          </div>
+        `;
+      }
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="7" class="text-center" style="color: var(--color-danger); padding: 30px;">Lỗi tải nhật ký: ${err.message}</td></tr>`;
+    }
+  },
+
+  resetAuditFilters() {
+    const q = document.getElementById('audit-filter-q');
+    const act = document.getElementById('audit-filter-action');
+    const ent = document.getElementById('audit-filter-entity');
+    const from = document.getElementById('audit-filter-from');
+    const to = document.getElementById('audit-filter-to');
+    if (q) q.value = '';
+    if (act) act.value = '';
+    if (ent) ent.value = '';
+    if (from) from.value = '';
+    if (to) to.value = '';
+    this.filterAuditLogs(1);
+  },
+
+  async viewEntityTimeline(entityType, identifier) {
+    const modal = document.getElementById('timeline-modal');
+    const titleElem = document.getElementById('timeline-title');
+    const subElem = document.getElementById('timeline-subtitle');
+    const container = document.getElementById('timeline-events-container');
+
+    if (!modal || !container) return;
+
+    titleElem.textContent = `Lịch sử nghiệp vụ: ${identifier}`;
+    subElem.textContent = `Dòng sự kiện truy vết kiểm toán của đối tượng [${entityType.toUpperCase()}]`;
+    container.innerHTML = '<div style="text-align: center; padding: 30px;">Đang tải dữ liệu timeline...</div>';
+    modal.classList.add('active');
+
+    try {
+      const res = await API.getTimeline(entityType, identifier);
+      const events = res.timeline || [];
+
+      if (events.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state" style="padding: 40px 10px;">
+            <div style="font-weight: 600; margin-bottom: 4px;">Chưa có bản ghi kiểm toán nào cho chứng từ này</div>
+            <div style="font-size: 0.8125rem; color: var(--color-text-muted);">Chứng từ có thể được tạo từ dữ liệu khởi tạo ban đầu</div>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = events.map(ev => {
+        const actionInfo = this.formatAuditAction(ev.action);
+        let detailsHtml = '';
+        if (ev.details_parsed && typeof ev.details_parsed === 'object') {
+          const rows = Object.entries(ev.details_parsed).map(([k, v]) => {
+            return `<div><strong>${this.formatDetailKey(k)}:</strong> ${this.formatDetailVal(k, v)}</div>`;
+          }).join('');
+          detailsHtml = `<div class="timeline-body">${rows}</div>`;
+        } else if (ev.details) {
+          detailsHtml = `<div class="timeline-body">${ev.details}</div>`;
+        }
+
+        return `
+          <div class="timeline-item">
+            <div class="timeline-marker ${actionInfo.markerClass}">
+              <div class="timeline-dot-inner"></div>
+            </div>
+            <div class="timeline-header">
+              <div class="timeline-title">
+                <span class="badge ${actionInfo.badgeClass}">${actionInfo.label}</span>
+                ${ev.entity_code ? `<span style="font-weight: 700; color: var(--color-primary);">${ev.entity_code}</span>` : ''}
+              </div>
+              <div class="timeline-time">${ev.created_at}</div>
+            </div>
+            <div style="font-size: 0.8125rem; margin-bottom: 6px; color: var(--color-text-secondary);">
+              Người thực hiện: <span class="timeline-actor">${ev.user_name}</span> ${ev.ip_address ? `(IP: ${ev.ip_address})` : ''}
+            </div>
+            ${detailsHtml}
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      container.innerHTML = `<div style="color: var(--color-danger); padding: 20px;">Lỗi tải timeline: ${err.message}</div>`;
+    }
+  },
+
+  formatAuditAction(action) {
+    const map = {
+      'ORDER_CREATE': { label: 'Tạo đơn bán (POS)', badgeClass: 'badge-green', markerClass: 'marker-success' },
+      'ORDER_RETURN_PROCESSED': { label: 'Xử lý trả hàng', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
+      'PURCHASE_CREATE': { label: 'Tạo phiếu nhập hàng', badgeClass: 'badge-blue', markerClass: 'marker-info' },
+      'RETURN_CREATE': { label: 'Khách đổi trả hàng', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
+      'STOCK_ADJUST': { label: 'Kiểm kho / Điều chỉnh', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'CASH_RECEIPT': { label: 'Lập phiếu thu tiền', badgeClass: 'badge-green', markerClass: 'marker-success' },
+      'CASH_PAYMENT': { label: 'Lập phiếu chi tiền', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'DEBT_PAY_CUSTOMER': { label: 'Thu nợ khách hàng', badgeClass: 'badge-green', markerClass: 'marker-success' },
+      'DEBT_PAY_SUPPLIER': { label: 'Thanh toán nợ NCC', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
+      'PRODUCT_CREATE': { label: 'Tạo hàng hóa', badgeClass: 'badge-blue', markerClass: 'marker-info' },
+      'PRODUCT_UPDATE': { label: 'Cập nhật hàng hóa', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'PRODUCT_DELETE': { label: 'Xóa hàng hóa', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'CUSTOMER_CREATE': { label: 'Thêm khách hàng', badgeClass: 'badge-blue', markerClass: 'marker-info' },
+      'CUSTOMER_UPDATE': { label: 'Cập nhật khách hàng', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'CUSTOMER_DELETE': { label: 'Xóa khách hàng', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'CUSTOMER_PRICE_SET': { label: 'Cài giá riêng', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'SUPPLIER_CREATE': { label: 'Thêm nhà cung cấp', badgeClass: 'badge-blue', markerClass: 'marker-info' },
+      'SUPPLIER_UPDATE': { label: 'Cập nhật nhà cung cấp', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'SUPPLIER_DELETE': { label: 'Xóa nhà cung cấp', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'SETTINGS_UPDATE': { label: 'Cập nhật cài đặt', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'BACKUP_DOWNLOAD': { label: 'Tải bản sao lưu', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'BOOTSTRAP_INITIAL_ADMIN': { label: 'Khởi tạo Quản trị viên', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'USER_LOGIN': { label: 'Đăng nhập thành công', badgeClass: 'badge-green', markerClass: 'marker-success' },
+      'USER_LOGIN_FAILED': { label: 'Đăng nhập thất bại', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'USER_LOGOUT': { label: 'Đăng xuất', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'USER_CREATE': { label: 'Tạo tài khoản nhân viên', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'USER_UPDATE': { label: 'Sửa tài khoản', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'USER_LOCK': { label: 'Khóa tài khoản', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'USER_UNLOCK': { label: 'Mở khóa tài khoản', badgeClass: 'badge-green', markerClass: 'marker-success' },
+      'USER_RESET_PASSWORD': { label: 'Đặt lại mật khẩu', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
+      'USER_PASSWORD_CHANGE': { label: 'Đổi mật khẩu', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'USER_REVOKE_SESSIONS': { label: 'Thu hồi phiên đăng nhập', badgeClass: 'badge-amber', markerClass: 'marker-warning' }
+    };
+    return map[action] || { label: action, badgeClass: 'badge-tag', markerClass: 'marker-info' };
+  },
+
+  formatDetailKey(key) {
+    const map = {
+      'customer_name': 'Khách hàng',
+      'supplier_name': 'Nhà cung cấp',
+      'items_count': 'Số lượng mặt hàng',
+      'total_amount': 'Tổng tiền hàng',
+      'discount': 'Chiết khấu',
+      'vat_amount': 'Thuế VAT',
+      'final_amount': 'Khách cần trả',
+      'actual_paid': 'Tiền thực thu',
+      'change_amount': 'Tiền thừa',
+      'debt_amount': 'Ghi nợ',
+      'payment_method': 'Hình thức thanh toán',
+      'refund_amount': 'Tiền hoàn lại',
+      'debt_deduct_amount': 'Cấn trừ nợ',
+      'order_code': 'Mã hóa đơn gốc',
+      'return_code': 'Mã phiếu trả',
+      'reason': 'Lý do',
+      'diff': 'Chênh lệch tồn',
+      'old_stock': 'Tồn trước kiểm',
+      'new_stock': 'Tồn sau kiểm',
+      'amount': 'Số tiền',
+      'category': 'Hạng mục',
+      'fund_type': 'Quỹ tiền',
+      'receipt_code': 'Mã phiếu thu',
+      'payment_code': 'Mã phiếu chi',
+      'message': 'Thông tin',
+      'username': 'Tên đăng nhập',
+      'full_name': 'Họ và tên',
+      'role': 'Vai trò'
+    };
+    return map[key] || key;
+  },
+
+  formatDetailVal(key, val) {
+    if (typeof val === 'number') {
+      if (key.includes('amount') || key.includes('paid') || key.includes('discount') || key.includes('vat') || key.includes('total') || key.includes('debt')) {
+        return this.formatMoney(val);
+      }
+      return val.toLocaleString('vi-VN');
+    }
+    if (key === 'role') return this.getRoleName(val);
+    if (key === 'payment_method') {
+      const pm = { 'cash': 'Tiền mặt', 'bank': 'Chuyển khoản', 'debt': 'Ghi nợ' };
+      return pm[val] || val;
+    }
+    return val;
   }
 };
 
