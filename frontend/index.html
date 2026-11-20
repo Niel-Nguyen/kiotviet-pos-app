@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KiotPro - Phần Mềm Quản Lý Bán Hàng & Phân Phối</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Left Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-icon">K</div>
+        <div class="brand-text">
+          <h1>KiotPro POS</h1>
+          <p>Quản lý Bán hàng & Phân phối</p>
+        </div>
+      </div>
+
+      <ul class="sidebar-menu">
+        <li>
+          <a class="menu-item active" data-view="dashboard">
+            <span class="icon">📊</span>
+            <span>Tổng quan</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="pos">
+            <span class="icon">🛒</span>
+            <span>Bán hàng (POS)</span>
+            <span class="badge" style="background-color: #10b981;">F9</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="products">
+            <span class="icon">📦</span>
+            <span>Hàng hóa & Kho</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="purchases">
+            <span class="icon">📥</span>
+            <span>Nhập hàng (NCC)</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="customers">
+            <span class="icon">👥</span>
+            <span>Khách & Giá riêng</span>
+            <span class="badge" style="background-color: #f59e0b;">⭐</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="suppliers">
+            <span class="icon">🏭</span>
+            <span>Nhà cung cấp</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="returns">
+            <span class="icon">🔄</span>
+            <span>Khách trả hàng</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="cash-flow">
+            <span class="icon">💰</span>
+            <span>Sổ quỹ & Dòng tiền</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="reports">
+            <span class="icon">🧾</span>
+            <span>Báo cáo doanh thu</span>
+          </a>
+        </li>
+        <li>
+          <a class="menu-item" data-view="settings">
+            <span class="icon">⚙️</span>
+            <span>Cài đặt & Sao lưu</span>
+          </a>
+        </li>
+      </ul>
+
+      <div class="sidebar-footer">
+        <div>Hệ thống KiotPro v2.5</div>
+        <small style="color: #8da4af;">Chuẩn kế toán & Giá vốn MAC</small>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <div class="main-wrapper">
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <h2 class="page-title" id="page-title-text">Tổng quan kinh doanh</h2>
+        </div>
+        <div class="topbar-right">
+          <div class="quick-fund-pill">
+            <span>Quỹ tiền:</span>
+            <span class="fund-value" id="top-fund-balance">0 đ</span>
+          </div>
+          <button class="btn-pos-quick" onclick="App.navigate('pos')">
+            <span>🛒</span> Bán hàng (F9)
+          </button>
+        </div>
+      </header>
+
+      <!-- View Containers -->
+      <main class="page-content" id="main-content-area">
+        <!-- 1. DASHBOARD VIEW -->
+        <section id="view-dashboard" class="view-section"></section>
+
+        <!-- 2. POS VIEW (FULLSCREEN DEDICATED) -->
+        <section id="view-pos" class="view-section" style="display: none; padding: 0;">
+          <div class="pos-container">
+            <!-- Left: Products Catalog & Search -->
+            <div class="pos-products-panel">
+              <div class="pos-search-bar">
+                <input type="text" id="pos-search-input" class="form-control" placeholder="🔍 Tìm tên sản phẩm, mã SKU hoặc quét mã vạch (Enter)..." autofocus>
+              </div>
+              <div class="pos-categories" id="pos-categories-container"></div>
+              <div class="pos-products-grid" id="pos-products-grid"></div>
+            </div>
+
+            <!-- Right: Cart & Checkout -->
+            <div class="pos-cart-panel">
+              <!-- Customer Bar -->
+              <div class="pos-customer-bar">
+                <div style="flex: 1;">
+                  <select id="pos-customer-select" class="form-control" style="font-weight: 600;"></select>
+                </div>
+                <button class="btn btn-sm btn-outline" onclick="App.openCreateCustomerModal()" title="Thêm khách hàng mới">+</button>
+                <span id="pos-customer-debt" class="customer-debt-badge" style="display: none;"></span>
+              </div>
+
+              <!-- Cart Items List -->
+              <div class="pos-cart-items" id="pos-cart-list"></div>
+
+              <!-- Checkout Summary -->
+              <div class="pos-checkout-summary">
+                <div class="summary-row">
+                  <span>Tổng tiền hàng:</span>
+                  <span id="pos-subtotal" style="font-weight: 700;">0 đ</span>
+                </div>
+                <div class="summary-row" style="align-items: center;">
+                  <span>Chiết khấu (VNĐ):</span>
+                  <input type="number" id="pos-discount-input" class="form-control" style="width: 130px; text-align: right; padding: 4px 8px;" value="0" min="0">
+                </div>
+                <div class="summary-row" style="align-items: center;">
+                  <span>Thuế VAT (%):</span>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <select id="pos-vat-select" class="form-control" style="width: 80px; padding: 4px 8px;">
+                      <option value="0">0%</option>
+                      <option value="8">8%</option>
+                      <option value="10">10%</option>
+                    </select>
+                    <span id="pos-vat-amount" style="font-size: 0.85rem; color: #64748b; min-width: 60px; text-align: right;">0 đ</span>
+                  </div>
+                </div>
+                <div class="summary-row total">
+                  <span>KHÁCH CẦN TRẢ:</span>
+                  <span id="pos-final-amount">0 đ</span>
+                </div>
+
+                <!-- Payment Methods -->
+                <div style="display: flex; gap: 6px; margin: 10px 0;">
+                  <button class="btn btn-sm btn-outline payment-method-btn active" data-method="cash" style="flex: 1;">💵 Tiền mặt</button>
+                  <button class="btn btn-sm btn-outline payment-method-btn" data-method="bank" style="flex: 1;">🏦 C.Khoản</button>
+                  <button class="btn btn-sm btn-outline payment-method-btn" data-method="debt" style="flex: 1; color: #ef4444;">📝 Ghi nợ</button>
+                </div>
+
+                <div class="summary-row" style="align-items: center;">
+                  <span>Tiền khách đưa:</span>
+                  <input type="number" id="pos-paid-input" class="form-control" style="width: 140px; text-align: right; font-weight: 700; padding: 6px 8px; font-size: 1rem;" value="0" min="0">
+                </div>
+
+                <div class="summary-row" style="font-weight: 600;">
+                  <span id="pos-balance-label">Tiền thừa trả khách:</span>
+                  <span id="pos-balance-amount" style="color: #10b981; font-weight: 800;">0 đ</span>
+                </div>
+
+                <button class="btn-checkout" onclick="POS.checkout()">
+                  ⚡ THANH TOÁN (IN HÓA ĐƠN)
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. PRODUCTS & INVENTORY VIEW -->
+        <section id="view-products" class="view-section" style="display: none;"></section>
+
+        <!-- 4. PURCHASES VIEW -->
+        <section id="view-purchases" class="view-section" style="display: none;"></section>
+
+        <!-- 5. CUSTOMERS VIEW -->
+        <section id="view-customers" class="view-section" style="display: none;"></section>
+
+        <!-- 6. SUPPLIERS VIEW -->
+        <section id="view-suppliers" class="view-section" style="display: none;"></section>
+
+        <!-- 7. SALES RETURNS VIEW -->
+        <section id="view-returns" class="view-section" style="display: none;"></section>
+
+        <!-- 8. CASH FLOW VIEW -->
+        <section id="view-cash-flow" class="view-section" style="display: none;"></section>
+
+        <!-- 9. REPORTS VIEW -->
+        <section id="view-reports" class="view-section" style="display: none;"></section>
+
+        <!-- 10. SETTINGS VIEW -->
+        <section id="view-settings" class="view-section" style="display: none;"></section>
+      </main>
+    </div>
+  </div>
+
+  <!-- ================= MODALS ================= -->
+
+  <!-- 1. Product Modal with Packaging Sub-units -->
+  <div class="modal-overlay" id="product-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="product-modal-title">Thêm hàng hóa</h3>
+        <button class="modal-close" data-close-modal="product-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="prod-id">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Mã SKU (tự động nếu bỏ trống):</label>
+            <input type="text" id="prod-code" class="form-control" placeholder="SP0001">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Mã vạch Barcode:</label>
+            <input type="text" id="prod-barcode" class="form-control" placeholder="893...">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tên hàng hóa (*):</label>
+          <input type="text" id="prod-name" class="form-control" placeholder="Ví dụ: Thùng Nước ngọt Coca Cola 24 lon 320ml">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Danh mục:</label>
+            <input type="text" id="prod-category" class="form-control" placeholder="Nước giải khát, Bánh kẹo...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Đơn vị cơ bản (*):</label>
+            <input type="text" id="prod-unit" class="form-control" placeholder="Thùng, Hộp, Chai, Cái, Kg...">
+          </div>
+        </div>
+        <!-- Packaging Sub-unit (Quy đổi đơn vị phân phối) -->
+        <div class="form-row" style="background: #f8fafc; padding: 10px; border-radius: 6px; border: 1px dashed #cbd5e1; margin-bottom: 14px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Đơn vị quy đổi phụ (nếu có):</label>
+            <input type="text" id="prod-sub-unit" class="form-control" placeholder="Ví dụ: Lon, Gói, Hộp nhỏ">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Hệ số quy đổi (1 ĐV chính = ? ĐV phụ):</label>
+            <input type="number" id="prod-sub-unit-ratio" class="form-control" value="1" min="1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Giá vốn ban đầu (VNĐ):</label>
+            <input type="number" id="prod-cost-price" class="form-control" value="0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Giá bán niêm yết (VNĐ):</label>
+            <input type="number" id="prod-sale-price" class="form-control" value="0">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Tồn kho ban đầu:</label>
+            <input type="number" id="prod-stock" class="form-control" value="0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Cảnh báo tồn tối thiểu:</label>
+            <input type="number" id="prod-min-stock" class="form-control" value="5">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="product-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.saveProductForm()">Lưu hàng hóa</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Customer Modal -->
+  <div class="modal-overlay" id="customer-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="customer-modal-title">Khách hàng</h3>
+        <button class="modal-close" data-close-modal="customer-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="cust-id">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Mã khách (tự động):</label>
+            <input type="text" id="cust-code" class="form-control" placeholder="KH0001">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tên khách hàng (*):</label>
+            <input type="text" id="cust-name" class="form-control" placeholder="Họ và tên / Tên cửa hàng đại lý">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Số điện thoại:</label>
+            <input type="text" id="cust-phone" class="form-control" placeholder="090...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Nhóm khách hàng:</label>
+            <select id="cust-group" class="form-control">
+              <option value="Đại lý">Đại lý</option>
+              <option value="Bán buôn">Bán buôn</option>
+              <option value="VIP">VIP</option>
+              <option value="Khách lẻ">Khách lẻ</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Địa chỉ:</label>
+          <input type="text" id="cust-address" class="form-control">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Email:</label>
+            <input type="email" id="cust-email" class="form-control">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Nợ ban đầu (VNĐ):</label>
+            <input type="number" id="cust-debt" class="form-control" value="0">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <textarea id="cust-notes" class="form-control" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="customer-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.saveCustomerForm()">Lưu khách hàng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Customer-Specific Pricing Modal -->
+  <div class="modal-overlay" id="customer-pricing-modal">
+    <div class="modal-dialog modal-dialog-lg">
+      <div class="modal-header" style="background-color: #fefce8;">
+        <div>
+          <h3 class="modal-title" style="color: #854d0e;">
+            ⭐ Bảng Giá Riêng Cho Khách Hàng: <span id="cust-pricing-name"></span>
+          </h3>
+          <small style="color: #713f12;">Quản lý giá riêng biệt cho từng sản phẩm đối với khách hàng này. Khi bán hàng hệ thống sẽ tự áp dụng giá này.</small>
+        </div>
+        <button class="modal-close" data-close-modal="customer-pricing-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-bottom: 20px;">
+          <h4 style="font-size: 0.95rem; margin-bottom: 10px; color: #0066cc;">+ Thêm / Cập nhật giá riêng cho mặt hàng:</h4>
+          <div style="display: grid; grid-template-columns: 2fr 1fr 1.5fr auto; gap: 10px; align-items: flex-end;">
+            <div>
+              <label class="form-label">Chọn sản phẩm:</label>
+              <select id="cust-pricing-prod-select" class="form-control"></select>
+            </div>
+            <div>
+              <label class="form-label">Giá riêng (VNĐ):</label>
+              <input type="number" id="cust-pricing-new-price" class="form-control" placeholder="Nhập giá">
+            </div>
+            <div>
+              <label class="form-label">Ghi chú thỏa thuận:</label>
+              <input type="text" id="cust-pricing-notes" class="form-control" placeholder="Ví dụ: Giá sỉ hợp đồng">
+            </div>
+            <button class="btn btn-success" onclick="App.saveCustomerPriceRule()">Lưu giá riêng</button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Mã SP</th>
+                <th>Tên sản phẩm</th>
+                <th>Đơn vị</th>
+                <th>Giá niêm yết</th>
+                <th>Giá riêng cho khách</th>
+                <th>Chênh lệch / Ghi chú</th>
+                <th style="text-align: right;">Hành động</th>
+              </tr>
+            </thead>
+            <tbody id="cust-pricing-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" data-close-modal="customer-pricing-modal">Xong</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Customer Debt Payment Modal (Thu nợ) -->
+  <div class="modal-overlay" id="cust-debt-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Thu tiền nợ khách hàng</h3>
+        <button class="modal-close" data-close-modal="cust-debt-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="debt-cust-id">
+        <div style="margin-bottom: 14px; font-size: 0.95rem;">
+          Khách hàng: <strong id="debt-cust-name"></strong><br>
+          Công nợ hiện tại: <span id="debt-cust-current" style="color: #ef4444; font-weight: 700;"></span>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Số tiền thu (VNĐ) (* không vượt quá dư nợ):</label>
+          <input type="number" id="debt-pay-amount" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Hình thức nhận tiền:</label>
+          <select id="debt-fund-type" class="form-control">
+            <option value="cash">Tiền mặt tại quầy</option>
+            <option value="bank">Chuyển khoản ngân hàng</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="cust-debt-modal">Hủy</button>
+        <button class="btn btn-success" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ & Lập Phiếu Thu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Supplier Modal -->
+  <div class="modal-overlay" id="supplier-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Thêm Nhà cung cấp</h3>
+        <button class="modal-close" data-close-modal="supplier-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="supp-id">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Mã NCC (tự động):</label>
+            <input type="text" id="supp-code" class="form-control" placeholder="NCC0001">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tên Nhà cung cấp (*):</label>
+            <input type="text" id="supp-name" class="form-control">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Số điện thoại:</label>
+            <input type="text" id="supp-phone" class="form-control">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Nợ hiện tại (VNĐ):</label>
+            <input type="number" id="supp-debt" class="form-control" value="0">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Địa chỉ:</label>
+          <input type="text" id="supp-address" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <textarea id="supp-notes" class="form-control" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="supplier-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.saveSupplierForm()">Lưu Nhà cung cấp</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Supplier Debt Payment Modal -->
+  <div class="modal-overlay" id="supp-debt-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Chi trả nợ Nhà cung cấp</h3>
+        <button class="modal-close" data-close-modal="supp-debt-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="debt-supp-id">
+        <div style="margin-bottom: 14px; font-size: 0.95rem;">
+          Nhà cung cấp: <strong id="debt-supp-name"></strong><br>
+          Nợ phải trả: <span id="debt-supp-current" style="color: #ef4444; font-weight: 700;"></span>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Số tiền chi trả (VNĐ) (* không vượt quá dư nợ):</label>
+          <input type="number" id="debt-supp-amount" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Nguồn tiền chi:</label>
+          <select id="debt-supp-fund-type" class="form-control">
+            <option value="bank">Tài khoản ngân hàng</option>
+            <option value="cash">Tiền mặt</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="supp-debt-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả & Lập Phiếu Chi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. Create Purchase Invoice Modal (Nhập hàng) -->
+  <div class="modal-overlay" id="purchase-create-modal">
+    <div class="modal-dialog modal-dialog-lg">
+      <div class="modal-header">
+        <h3 class="modal-title">Tạo Phiếu Nhập Hàng (Tăng tồn & Tính giá vốn MAC)</h3>
+        <button class="modal-close" data-close-modal="purchase-create-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row" style="margin-bottom: 14px;">
+          <div class="form-group">
+            <label class="form-label">Nhà cung cấp:</label>
+            <select id="purch-supplier-select" class="form-control"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Hình thức thanh toán:</label>
+            <select id="purch-payment-method" class="form-control">
+              <option value="cash">Tiền mặt</option>
+              <option value="bank">Chuyển khoản</option>
+              <option value="debt">Ghi nợ NCC (chưa trả)</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="background: #f1f5f9; padding: 12px; border-radius: 6px; margin-bottom: 14px; display: flex; gap: 10px; align-items: center;">
+          <button class="btn btn-sm btn-primary" onclick="App.promptAddProductToPurchase()">+ Thêm sản phẩm nhập kho</button>
+          <button class="btn btn-sm btn-outline" onclick="App.openCreateProductModal()">+ Tạo hàng hóa mới</button>
+        </div>
+
+        <div class="table-responsive" style="max-height: 250px;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Sản phẩm</th>
+                <th>ĐVT</th>
+                <th>SL Nhập</th>
+                <th>Giá nhập (VNĐ)</th>
+                <th>Thành tiền</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="purch-items-tbody"></tbody>
+          </table>
+        </div>
+
+        <div style="margin-top: 16px; background-color: #f8fafc; padding: 14px; border-radius: 8px;">
+          <div style="display: flex; justify-content: space-between; font-size: 1rem; margin-bottom: 8px;">
+            <span>Tổng tiền hàng nhập:</span>
+            <strong id="purch-total-amount" style="color: #0066cc;">0 đ</strong>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Số tiền thực tế thanh toán cho NCC:</label>
+              <input type="number" id="purch-paid-amount" class="form-control" value="0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Ghi chú phiếu nhập:</label>
+              <input type="text" id="purch-notes" class="form-control" placeholder="Số hóa đơn đỏ, số phiếu giao...">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="purchase-create-modal">Hủy</button>
+        <button class="btn btn-success" onclick="App.submitPurchaseOrder()">Hoàn tất Nhập kho</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. Sales Return Modal (Khách trả hàng) -->
+  <div class="modal-overlay" id="return-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Lập Phiếu Khách Trả Hàng</h3>
+        <button class="modal-close" data-close-modal="return-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Khách hàng trả hàng:</label>
+          <select id="ret-customer-select" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sản phẩm trả lại (*):</label>
+          <select id="ret-product-select" class="form-control"></select>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Số lượng trả lại:</label>
+            <input type="number" id="ret-qty" class="form-control" value="1" min="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Đơn giá hoàn trả (VNĐ):</label>
+            <input type="number" id="ret-price" class="form-control" value="0">
+          </div>
+        </div>
+        <div style="background: #f8fafc; padding: 12px; border-radius: 6px; margin: 10px 0;">
+          <div style="display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 8px;">
+            <span>Tổng giá trị hàng trả lại:</span>
+            <span id="ret-total-amount" style="color: #0066cc;">0 đ</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Tiền mặt hoàn trả cho khách:</label>
+              <input type="number" id="ret-refund-amount" class="form-control" value="0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Hoặc trừ vào công nợ cũ:</label>
+              <input type="number" id="ret-debt-deduct" class="form-control" value="0">
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Nguồn tiền hoàn (nếu trả tiền mặt):</label>
+            <select id="ret-fund-type" class="form-control">
+              <option value="cash">Tiền mặt tại két quầy</option>
+              <option value="bank">Tài khoản ngân hàng</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lý do trả hàng:</label>
+          <input type="text" id="ret-notes" class="form-control" value="Hàng thừa / Đổi ý">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="return-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.submitSalesReturn()">Xác nhận Nhập lại kho & Hoàn tiền</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 9. Stock Logs Modal (Thẻ kho) -->
+  <div class="modal-overlay" id="stock-logs-modal">
+    <div class="modal-dialog modal-dialog-lg">
+      <div class="modal-header">
+        <h3 class="modal-title" id="stock-logs-title">Thẻ kho</h3>
+        <button class="modal-close" data-close-modal="stock-logs-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="table-responsive">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>Chứng từ</th>
+                <th>Loại giao dịch</th>
+                <th style="text-align: center;">Số lượng thay đổi</th>
+                <th style="text-align: center;">Tồn trước → Tồn sau</th>
+                <th>Ghi chú</th>
+              </tr>
+            </thead>
+            <tbody id="stock-logs-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" data-close-modal="stock-logs-modal">Đóng</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 10. Inventory Audit Modal (Kiểm kho) -->
+  <div class="modal-overlay" id="adjust-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Kiểm kê & Điều chỉnh tồn kho</h3>
+        <button class="modal-close" data-close-modal="adjust-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="adjust-product-id">
+        <div style="margin-bottom: 14px;">
+          Sản phẩm: <strong id="adjust-product-name"></strong><br>
+          Tồn kho trên hệ thống: <span id="adjust-current-stock" style="font-weight: 700; color: #0066cc;"></span>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Số lượng thực tế kiểm đếm:</label>
+          <input type="number" id="adjust-actual-stock" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Lý do điều chỉnh:</label>
+          <input type="text" id="adjust-notes" class="form-control" value="Kiểm kho định kỳ">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="adjust-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.saveAdjustStock()">Cân bằng tồn kho</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 11. Cash Flow Voucher Modal -->
+  <div class="modal-overlay" id="cash-flow-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title" id="cf-modal-title">Lập Phiếu Thu / Chi</h3>
+        <button class="modal-close" data-close-modal="cash-flow-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="cf-modal-type">
+        <div class="form-group">
+          <label class="form-label">Hạng mục (*):</label>
+          <input type="text" id="cf-category" class="form-control" placeholder="Chi phí thuê nhà, tiền điện nước...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Số tiền (VNĐ) (*):</label>
+          <input type="number" id="cf-amount" class="form-control" style="font-size: 1.1rem; font-weight: 700;">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Người nộp / nhận:</label>
+            <input type="text" id="cf-target-name" class="form-control">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Tài khoản quỹ:</label>
+            <select id="cf-fund-type" class="form-control">
+              <option value="cash">Tiền mặt tại quầy</option>
+              <option value="bank">Tài khoản ngân hàng</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <textarea id="cf-notes" class="form-control" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="cash-flow-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.saveCashFlowVoucher()">Lưu phiếu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 12. Thermal Receipt Preview Modal -->
+  <div class="modal-overlay" id="receipt-modal">
+    <div class="modal-dialog" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Hóa đơn thanh toán</h3>
+        <button class="modal-close" data-close-modal="receipt-modal">✕</button>
+      </div>
+      <div class="modal-body" id="receipt-content" style="padding: 10px;"></div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="receipt-modal">Đóng</button>
+        <button class="btn btn-primary" onclick="window.print()">🖨️ In hóa đơn</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Scripts -->
+  <script src="js/api.js"></script>
+  <script src="js/pos.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
