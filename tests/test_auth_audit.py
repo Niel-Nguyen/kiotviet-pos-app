@@ -9,7 +9,9 @@ import os
 import json
 import io
 import datetime
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'backend'))
 import database
@@ -96,15 +98,15 @@ class TestKiotProAuthAudit(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Use dedicated isolated test database to protect production data
-        test_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'test_kiotviet.db')
+        cls.test_db_dir = tempfile.TemporaryDirectory()
+        test_db = os.path.join(cls.test_db_dir.name, 'test_kiotviet.db')
         database.DB_FILE = test_db
         server.DB_FILE = test_db
-        if os.path.exists(test_db):
-            try:
-                os.remove(test_db)
-            except Exception:
-                pass
         database.init_db()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.test_db_dir.cleanup()
 
     def setUp(self):
         # Reset users and sessions before running tests
@@ -116,36 +118,55 @@ class TestKiotProAuthAudit(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_health_check(self):
+        """Railway health checks must succeed without authentication."""
+        code, _, data = execute_http_request("GET", "/healthz")
+        self.assertEqual(code, 200)
+        self.assertEqual(data.get("status"), "ok")
+
     def test_01_bootstrap_and_lockdown(self):
-        """Test bootstrap status, initial admin creation, and subsequent lockdown."""
-        # Check bootstrap status
-        code, _, data = execute_http_request("GET", "/api/auth/bootstrap-status")
-        self.assertEqual(code, 200)
-        self.assertTrue(data.get("need_bootstrap"))
+        """Test protected bootstrap, secure cookies, and subsequent lockdown."""
+        with patch.dict(os.environ, {
+            "KIOTPRO_BOOTSTRAP_TOKEN": "test-setup-token",
+            "KIOTPRO_COOKIE_SECURE": "true"
+        }):
+            code, _, data = execute_http_request("GET", "/api/auth/bootstrap-status")
+            self.assertEqual(code, 200)
+            self.assertTrue(data.get("need_bootstrap"))
+            self.assertTrue(data.get("bootstrap_token_required"))
 
-        # Create initial admin
-        code, headers, data = execute_http_request("POST", "/api/auth/bootstrap", body={
-            "username": "admin",
-            "full_name": "Nguyễn Quản Trị",
-            "password": "Password@123"
-        })
-        self.assertEqual(code, 201)
-        self.assertIn("token", data)
-        self.assertEqual(data["user"]["role"], "admin")
-        admin_token = data["token"]
+            # Bootstrap must not be usable without the deployment setup token.
+            code, _, data = execute_http_request("POST", "/api/auth/bootstrap", body={
+                "username": "admin",
+                "full_name": "Nguyễn Quản Trị",
+                "password": "Password@123"
+            })
+            self.assertEqual(code, 403)
+            self.assertEqual(data.get("code"), "INVALID_BOOTSTRAP_TOKEN")
 
-        # Check bootstrap status again (must be False now)
-        code, _, data = execute_http_request("GET", "/api/auth/bootstrap-status")
-        self.assertEqual(code, 200)
-        self.assertFalse(data.get("need_bootstrap"))
+            code, headers, data = execute_http_request("POST", "/api/auth/bootstrap", body={
+                "username": "admin",
+                "full_name": "Nguyễn Quản Trị",
+                "password": "Password@123",
+                "bootstrap_token": "test-setup-token"
+            })
+            self.assertEqual(code, 201)
+            self.assertIn("token", data)
+            self.assertEqual(data["user"]["role"], "admin")
+            self.assertIn("secure", headers.get("set-cookie", "").lower())
 
-        # Second bootstrap attempt must be REJECTED (403)
-        code, _, data = execute_http_request("POST", "/api/auth/bootstrap", body={
-            "username": "hacker",
-            "full_name": "Intruder",
-            "password": "Password@123"
-        })
-        self.assertEqual(code, 403)
+            code, _, data = execute_http_request("GET", "/api/auth/bootstrap-status")
+            self.assertEqual(code, 200)
+            self.assertFalse(data.get("need_bootstrap"))
+
+            # Once an administrator exists, bootstrap remains permanently locked.
+            code, _, data = execute_http_request("POST", "/api/auth/bootstrap", body={
+                "username": "hacker",
+                "full_name": "Intruder",
+                "password": "Password@123",
+                "bootstrap_token": "test-setup-token"
+            })
+            self.assertEqual(code, 403)
 
         # Audit log must record BOOTSTRAP_INITIAL_ADMIN
         conn = database.get_db()

@@ -88,6 +88,33 @@ Hệ thống quản lý bán hàng (POS), phân phối, kho hàng, dòng tiền 
 
 ---
 
+## 🚂 Deploy bản test lên Railway
+
+Railway phù hợp cho môi trường demo/pilot. URL Railway là URL công khai trên Internet; chỉ dùng dữ liệu demo và không dùng như môi trường production nếu chưa có kế hoạch vận hành, bảo mật và backup phù hợp.
+
+### Cấu hình service
+
+1. Đưa source lên một repository GitHub **private**, không đưa database, backup hoặc file `.env` lên GitHub.
+2. Tạo Railway project từ repository đó. Railpack nhận diện Python qua `requirements.txt`; ứng dụng không cần cài package bên ngoài.
+3. Đặt **Start Command** của service thành:
+   ```sh
+   python backend/server.py
+   ```
+4. Thêm một Railway Volume cho service, mount tại `/app/data`. App tự dùng `RAILWAY_VOLUME_MOUNT_PATH` để đặt file SQLite vào volume. Không tạo nhiều replica cho service đang dùng SQLite volume.
+5. Đặt các biến môi trường sau trong Railway:
+   - `KIOTPRO_COOKIE_SECURE=true`
+   - `KIOTPRO_BOOTSTRAP_TOKEN=<chuỗi bí mật ngẫu nhiên dài>`
+   - Railway tự cấp `PORT`; app sẽ tự đọc biến này.
+6. Deploy service và kiểm tra health check ở đường dẫn `/healthz`.
+7. Sau khi deploy, tạo Railway domain HTTPS. Truy cập trang lần đầu, nhập mã `KIOTPRO_BOOTSTRAP_TOKEN` cùng thông tin tài khoản Quản trị viên để khởi tạo hệ thống. Sau khi tạo admin thành công, xóa biến `KIOTPRO_BOOTSTRAP_TOKEN` và deploy lại.
+8. Chỉ gửi URL cho khách test sau khi đã đăng nhập thành công, tạo tài khoản test riêng và xác nhận database tồn tại sau khi restart service.
+
+Railway cung cấp HTTPS tự động cho Railway domain. Volume có giới hạn và chi phí tùy gói hiện hành; kiểm tra [Railway Volumes](https://docs.railway.com/volumes), [Public Networking](https://docs.railway.com/networking/public-networking) và [Start Command](https://docs.railway.com/deployments/start-command) trước khi deploy.
+
+**Lưu ý:** Không đưa `data/kiotviet.db`, `data/test_kiotviet.db`, các file backup hoặc mật khẩu thật lên repository. Dùng một database demo riêng cho khách hàng thử nghiệm và thử khôi phục backup trước khi dùng dữ liệu thật.
+
+---
+
 ## 🧪 Kiểm Thử Tự Động (Automated Test Suite)
 Bộ kiểm thử tự động toàn diện kiểm chứng 8 tiêu chí nghiệm thu quan trọng tại `tests/test_auth_audit.py`:
 1. `test_01_bootstrap_and_lockdown`: Khởi tạo admin ban đầu và khóa chặt endpoint bootstrap.

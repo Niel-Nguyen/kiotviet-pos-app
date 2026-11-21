@@ -13,17 +13,21 @@ import sys
 import socket
 import mimetypes
 import datetime
+import hmac
 from http import cookies
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from database import get_db, init_db, DB_FILE
 import auth
 
-PORT = 8080
+PORT = int(os.environ.get('PORT', '8080'))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontend')
 
 def row_to_dict(row):
     return dict(row) if row else None
+
+def use_secure_cookies():
+    return os.environ.get('KIOTPRO_COOKIE_SECURE', '').strip().lower() in ('1', 'true', 'yes')
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
@@ -115,11 +119,13 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def set_session_cookie(self, token, max_age=86400):
-        cookie = f"kiotpro_session={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax"
+        secure = '; Secure' if use_secure_cookies() else ''
+        cookie = f"kiotpro_session={token}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax{secure}"
         self.send_header('Set-Cookie', cookie)
 
     def clear_session_cookie(self):
-        cookie = "kiotpro_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+        secure = '; Secure' if use_secure_cookies() else ''
+        cookie = f"kiotpro_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure}"
         self.send_header('Set-Cookie', cookie)
 
     def authenticate(self, conn=None):
@@ -169,6 +175,10 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
+        if path == '/healthz':
+            self.send_json({"status": "ok"})
+            return
+
         if path.startswith('/api/'):
             self.handle_api_get(path, query)
         else:
@@ -207,7 +217,10 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
             # 1. PUBLIC: BOOTSTRAP STATUS
             if path == '/api/auth/bootstrap-status':
                 need = auth.is_bootstrap_needed(cursor)
-                self.send_json({"need_bootstrap": need})
+                self.send_json({
+                    "need_bootstrap": need,
+                    "bootstrap_token_required": bool(os.environ.get('KIOTPRO_BOOTSTRAP_TOKEN'))
+                })
                 return
 
             # 2. AUTHENTICATION: CURRENT USER PROFILE & PERMISSIONS
@@ -740,6 +753,12 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
             if path == '/api/auth/bootstrap':
                 if not auth.is_bootstrap_needed(cursor):
                     self.send_error_json("Hệ thống đã có tài khoản quản trị. Chức năng bootstrap đã đóng vĩnh viễn.", 403, "BOOTSTRAP_LOCKED")
+                    return
+
+                bootstrap_token = os.environ.get('KIOTPRO_BOOTSTRAP_TOKEN', '')
+                provided_token = str(body.get('bootstrap_token', ''))
+                if bootstrap_token and not hmac.compare_digest(provided_token, bootstrap_token):
+                    self.send_error_json("Mã thiết lập ban đầu không hợp lệ.", 403, "INVALID_BOOTSTRAP_TOKEN")
                     return
                 
                 username = body.get('username', '').strip()

@@ -15,7 +15,13 @@ import sqlite3
 import os
 import datetime
 
-DB_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'kiotviet.db')
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = (
+    os.environ.get('KIOTPRO_DATA_DIR')
+    or os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+    or os.path.join(PROJECT_DIR, 'data')
+)
+DB_FILE = os.path.join(DATA_DIR, 'kiotviet.db')
 
 def get_db():
     conn = sqlite3.connect(DB_FILE)

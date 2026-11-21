@@ -2078,7 +2078,7 @@ const App = {
     try {
       const bs = await API.getBootstrapStatus();
       if (bs.need_bootstrap) {
-        this.showAuthModal(true);
+        this.showAuthModal(true, bs.bootstrap_token_required);
         return;
       }
 
@@ -2097,15 +2097,19 @@ const App = {
     }
   },
 
-  showAuthModal(isBootstrap = false) {
+  showAuthModal(isBootstrap = false, bootstrapTokenRequired = false) {
     const modal = document.getElementById('auth-modal');
     const bsContainer = document.getElementById('auth-bootstrap-container');
     const loginContainer = document.getElementById('auth-login-container');
+    const tokenGroup = document.getElementById('bs-token-group');
+    const tokenInput = document.getElementById('bs-bootstrap-token');
 
     if (!modal) return;
     if (isBootstrap) {
       if (bsContainer) bsContainer.style.display = 'block';
       if (loginContainer) loginContainer.style.display = 'none';
+      if (tokenGroup) tokenGroup.style.display = bootstrapTokenRequired ? 'block' : 'none';
+      if (tokenInput) tokenInput.required = bootstrapTokenRequired;
     } else {
       if (bsContainer) bsContainer.style.display = 'none';
       if (loginContainer) loginContainer.style.display = 'block';
@@ -2195,6 +2199,7 @@ const App = {
     const fn = document.getElementById('bs-fullname')?.value.trim();
     const p = document.getElementById('bs-password')?.value;
     const cp = document.getElementById('bs-confirm-password')?.value;
+    const bootstrapToken = document.getElementById('bs-bootstrap-token')?.value.trim() || '';
 
     if (p !== cp) {
       this.toast('Mật khẩu và xác nhận mật khẩu không khớp', 'warning');
@@ -2202,8 +2207,15 @@ const App = {
     }
 
     try {
-      const res = await API.bootstrap({ username: u, full_name: fn, password: p });
+      const res = await API.bootstrap({
+        username: u,
+        full_name: fn,
+        password: p,
+        bootstrap_token: bootstrapToken
+      });
       API.setToken(res.token);
+      const bootstrapTokenInput = document.getElementById('bs-bootstrap-token');
+      if (bootstrapTokenInput) bootstrapTokenInput.value = '';
       this.toast('Khởi tạo tài khoản Quản trị viên thành công!', 'success');
       await this.initAuth();
     } catch (err) {
