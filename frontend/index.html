@@ -145,7 +145,7 @@
             <!-- Left: Products Catalog & Search -->
             <div class="pos-products-panel">
               <div class="pos-search-bar">
-                <input type="text" id="pos-search-input" class="form-control" placeholder="Tìm tên sản phẩm, mã SKU hoặc quét mã vạch (Enter)..." autofocus>
+                <input type="text" id="pos-search-input" class="form-control" placeholder="Tìm tên sản phẩm, SKU hoặc quét mã vạch (F2: Tìm, F4: Khách, F8: Thanh toán)..." autofocus>
               </div>
               <div class="pos-categories" id="pos-categories-container"></div>
               <div class="pos-products-grid" id="pos-products-grid"></div>
@@ -153,6 +153,9 @@
 
             <!-- Right: Cart & Checkout Panel -->
             <div class="pos-cart-panel">
+              <!-- Multi-Cart Tabs Bar -->
+              <div class="pos-cart-tabs-bar" id="pos-cart-tabs-bar"></div>
+
               <!-- Customer Bar -->
               <div class="pos-customer-bar">
                 <div style="flex: 1;">
@@ -224,11 +227,11 @@
                 </div>
 
                 <div style="display: flex; gap: 8px; margin-top: 8px;">
-                  <button class="btn btn-outline" style="flex: 1; padding: 10px 4px; font-weight: 600; font-size: 0.8125rem;" onclick="POS.checkout(true)" title="Lưu đơn đang chờ (Pending) - Không trừ kho, không ghi nợ">
-                    Lưu đơn đặt
+                  <button id="pos-btn-pending" class="btn btn-outline" style="flex: 1; padding: 10px 4px; font-weight: 600; font-size: 0.8125rem;" onclick="POS.checkout(true)" title="Lưu đơn đang chờ (F6)">
+                    Lưu đơn đặt (F6)
                   </button>
-                  <button class="btn-checkout" style="flex: 2; margin-top: 0;" onclick="POS.checkout(false)">
-                    Thanh Toán & In
+                  <button id="pos-btn-checkout" class="btn-checkout" style="flex: 2; margin-top: 0;" onclick="POS.checkout(false)" title="Thanh toán & In hóa đơn (F8)">
+                    Thanh Toán & In (F8)
                   </button>
                 </div>
               </div>

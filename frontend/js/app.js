@@ -34,7 +34,18 @@ const App = {
     'dashboard': null
   },
 
+  escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  },
+
   async init() {
+    window.escapeHtml = this.escapeHtml;
     this.setupNavigation();
     this.setupModals();
     await this.initAuth();
@@ -3353,7 +3364,7 @@ const App = {
         statusBadge = '<span class="order-badge-cancelled">Đã hủy</span>';
       }
 
-      if (title) title.innerHTML = `Chi tiết hóa đơn: <strong style="color: var(--color-primary);">${order.code}</strong> ${statusBadge}`;
+      if (title) title.innerHTML = `Chi tiết hóa đơn: <strong style="color: var(--color-primary);">${this.escapeHtml(order.code)}</strong> ${statusBadge}`;
       if (subtitle) subtitle.textContent = `Ngày tạo: ${order.created_at} | Nhân viên: ${order.user_name || 'Hệ thống'}`;
 
       const pmMap = { 'cash': 'Tiền mặt', 'bank': 'Chuyển khoản', 'debt': 'Ghi nợ' };
@@ -3363,10 +3374,10 @@ const App = {
         <tr>
           <td>${idx + 1}</td>
           <td>
-            <strong>${it.product_name}</strong>
-            ${it.conversion_rate && it.conversion_rate > 1 ? `<br><small style="color: var(--color-text-muted);">Quy đổi: 1 ${it.unit_name} = ${it.conversion_rate} đv cơ sở</small>` : ''}
+            <strong>${this.escapeHtml(it.product_name)}</strong>
+            ${it.conversion_rate && it.conversion_rate > 1 ? `<br><small style="color: var(--color-text-muted);">Quy đổi: 1 ${this.escapeHtml(it.unit_name)} = ${it.conversion_rate} đv cơ sở</small>` : ''}
           </td>
-          <td><span class="unit-tag-pill">${it.unit_name || 'Cái'}</span></td>
+          <td><span class="unit-tag-pill">${this.escapeHtml(it.unit_name || 'Cái')}</span></td>
           <td class="text-right font-bold">${it.quantity}</td>
           <td class="text-right tabular-nums">${this.formatMoney(it.unit_price)}</td>
           <td class="text-right tabular-nums font-bold">${this.formatMoney(it.total_price)}</td>
@@ -3376,21 +3387,21 @@ const App = {
       body.innerHTML = `
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; background: var(--color-bg-alt); padding: 12px 16px; border-radius: 6px; font-size: 0.84rem;">
           <div>
-            <div><strong>Khách hàng:</strong> ${order.customer_name || 'Khách lẻ'}</div>
-            <div><strong>Số điện thoại:</strong> ${order.customer_phone || '---'}</div>
-            <div><strong>Địa chỉ:</strong> ${order.customer_address || '---'}</div>
+            <div><strong>Khách hàng:</strong> ${this.escapeHtml(order.customer_name || 'Khách lẻ')}</div>
+            <div><strong>Số điện thoại:</strong> ${this.escapeHtml(order.customer_phone || '---')}</div>
+            <div><strong>Địa chỉ:</strong> ${this.escapeHtml(order.customer_address || '---')}</div>
           </div>
           <div>
-            <div><strong>Hình thức thanh toán:</strong> <span class="badge-tag">${pmLabel}</span></div>
+            <div><strong>Hình thức thanh toán:</strong> <span class="badge-tag">${this.escapeHtml(pmLabel)}</span></div>
             <div><strong>Trạng thái:</strong> ${statusBadge}</div>
-            <div><strong>Ghi chú:</strong> <em style="color: var(--color-text-secondary);">${order.notes || 'Không có ghi chú'}</em></div>
+            <div><strong>Ghi chú:</strong> <em style="color: var(--color-text-secondary);">${this.escapeHtml(order.notes || 'Không có ghi chú')}</em></div>
           </div>
         </div>
 
         ${order.status === 'cancelled' ? `
           <div class="alert alert-warning" style="margin-bottom: 16px; font-size: 0.84rem;">
-            <strong>Đơn hàng đã bị hủy</strong> lúc <em>${order.cancelled_at || ''}</em>.<br>
-            <strong>Lý do:</strong> ${order.cancel_reason || 'Không rõ lý do'}.<br>
+            <strong>Đơn hàng đã bị hủy</strong> lúc <em>${this.escapeHtml(order.cancelled_at || '')}</em>.<br>
+            <strong>Lý do:</strong> ${this.escapeHtml(order.cancel_reason || 'Không rõ lý do')}.<br>
             Toàn bộ tồn kho, quỹ tiền và công nợ liên quan đã được tự động hoàn trả an toàn.
           </div>
         ` : ''}

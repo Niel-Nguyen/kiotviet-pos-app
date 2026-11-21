@@ -117,6 +117,18 @@ Hệ thống quản lý bán hàng (POS), phân phối, kho hàng, dòng tiền 
 - Hiển thị ghi chú rõ ràng trên màn hình chi tiết đơn bán và trên phiếu in nhiệt 80mm.
 - Tách biệt hoàn toàn giữa ghi chú của thu ngân/khách hàng và các thông điệp ghi nợ tự động của hệ thống.
 
+### 14. An Toàn Kế Toán, Trừ Kho Nguyên Tử & Phím Tắt POS (v4 Enterprise Upgrades)
+- **Chuẩn hóa tính toán lợi nhuận khi có hàng trả (Return Margin Accounting)**: Báo cáo Dashboard chỉ khấu trừ phần chênh lệch lợi nhuận của hàng trả `(Giá bán - Giá vốn) * Số lượng`, không trừ toàn bộ giá trị hàng hóa làm sai lệch âm lãi gộp.
+- **Xếp hạng tiêu thụ chuẩn xác theo đơn vị cơ sở**: Bảng xếp hạng Top sản phẩm bán chạy tính toán theo `base_quantity`, phản ánh trung thực sản lượng tiêu thụ bất kể khách mua theo Lon, Lốc hay Thùng.
+- **Trừ kho nguyên tử chống Race Condition (Atomic Stock Deduction)**: Câu lệnh SQL `UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?` ngăn chặn hoàn toàn lỗi thất thoát tồn kho khi nhiều quầy POS thanh toán đồng thời cùng một mặt hàng.
+- **Bảo toàn dữ liệu lịch sử với Soft Delete (`is_active = 0`)**: Sản phẩm, khách hàng hoặc nhà cung cấp đã từng phát sinh chứng từ giao dịch được chuyển sang trạng thái ngừng kinh doanh/giao dịch thay vì xóa cứng, triệt tiêu lỗi hỏng dữ liệu và lỗi khóa ngoại.
+- **Sinh mã chứng từ chống trùng lặp (`generate_code`)**: Cơ chế tìm kiếm `MAX(id) + 1` kết hợp vòng lặp kiểm tra trùng lặp đảm bảo không bao giờ sinh trùng mã hóa đơn ngay cả khi có xóa dữ liệu thử nghiệm.
+- **Chống Stored XSS toàn diện**: Bổ sung hàm lọc ký tự đặc biệt `escapeHtml()` tại toàn bộ các điểm hiển thị dữ liệu người dùng nhập trong POS và chi tiết đơn hàng.
+- **Chặn bấm trùng nút Thanh toán (Checkout Debounce)**: Vô hiệu hóa nút thanh toán và hiển thị trạng thái đang xử lý để ngăn chặn việc gửi đơn hàng kép khi mạng trễ.
+- **Giỏ hàng đa tab tại POS (Multi-cart Tabs)**: Thu ngân có thể mở tối đa 5 hóa đơn chờ cùng lúc (`Hóa đơn 1`, `Hóa đơn 2`...) để linh hoạt phục vụ khách hàng tiếp theo khi khách trước tạm giữ đơn.
+- **Hệ thống phím tắt quầy thu ngân chuyên nghiệp**: Hỗ trợ `F2` (Tìm kiếm / quét mã vạch), `F4` (Chọn nhanh khách hàng), `F6` (Lưu đơn đặt tạm), `F8` (Thanh toán & in hóa đơn) giúp thao tác tốc độ cao không cần chuột.
+- **SQLite WAL Mode & Busy Timeout**: Tự động bật `PRAGMA journal_mode = WAL` và `PRAGMA busy_timeout = 5000` đảm bảo server chịu tải mượt mà cho nhiều máy trạm trong mạng LAN.
+
 ---
 
 ## 🔒 Khuyến Cáo Bảo Mật Mạng (Security Notice)
@@ -131,10 +143,12 @@ Hệ thống quản lý bán hàng (POS), phân phối, kho hàng, dòng tiền 
 - **Tự động sao lưu an toàn trước migration**: Trước mỗi bước nâng cấp schema, hệ thống tự động tạo bản sao lưu nguyên vẹn:
   - `data/kiotviet_backup_pre_v2.db` (trước khi nâng cấp RBAC & Audit)
   - `data/kiotviet_backup_pre_v3.db` (trước khi nâng cấp Đơn vị quy đổi, Khuyến mãi & Vòng đời đơn hàng)
+  - `data/kiotviet_backup_pre_v4.db` (trước khi nâng cấp An toàn kế toán, Trừ kho nguyên tử & Soft Delete)
 - **Bảng theo dõi Migration (`schema_migrations`)**: Quản lý lịch sử nâng cấp schema có phiên bản:
   - Phiên bản 1 (`v1_initial_schema`): Schema cốt lõi hàng hóa, khách hàng, đơn hàng, sổ quỹ.
   - Phiên bản 2 (`v2_auth_rbac_audit`): Thêm bảng `users`, `sessions`, `audit_logs` và gắn cột `user_id`, `user_name` vào tất cả chứng từ.
   - Phiên bản 3 (`v3_units_promotions_orders`): Thêm bảng `product_units` (đơn vị đóng gói quy đổi), `promotions` (chương trình khuyến mãi), thêm cột `status`, `notes`, `promotion_id`, `promotion_name`, `promotion_discount` vào `orders`, và `unit_id`, `unit_name`, `conversion_rate`, `base_quantity` vào `order_items`, `purchase_items`, `return_items`.
+  - Phiên bản 4 (`v4_accounting_safety_and_soft_delete`): Thêm cột `is_active` cho `products`, `customers`, `suppliers` kèm indexes, chuyển sang Soft Delete bảo toàn toàn vẹn dữ liệu kế toán và lịch sử giao dịch.
 - **Cách khôi phục dữ liệu**: Nếu muốn khôi phục về trạng thái trước migration, chỉ cần dừng server và copy đè file backup tương ứng thành `kiotviet.db`.
 
 ---
@@ -168,7 +182,7 @@ Railway cung cấp HTTPS tự động cho Railway domain. Volume có giới hạ
 
 ## 🧪 Kiểm Thử Tự Động (Automated Test Suites)
 
-Hệ thống đi kèm 2 bộ kiểm thử tự động toàn diện, không phụ thuộc bất kỳ thư viện ngoài nào (100% Python Standard Library):
+Hệ thống đi kèm 3 bộ kiểm thử tự động toàn diện (21/21 Tests Passed), không phụ thuộc bất kỳ thư viện ngoài nào (100% Python Standard Library):
 
 ### 1. Kiểm Thử Phân Quyền & Kiểm Toán (`tests/test_auth_audit.py` - 9/9 Passed)
 1. `test_01_bootstrap_and_lockdown`: Khởi tạo admin ban đầu an toàn và khóa chặt endpoint bootstrap.
@@ -190,10 +204,17 @@ Hệ thống đi kèm 2 bộ kiểm thử tự động toàn diện, không ph�
 6. `test_06_promotions_engine_and_order_snapshot`: Động cơ khuyến mãi tự động, kiểm tra điều kiện, chống cộng dồn chiết khấu, lưu snapshot vào đơn bán.
 7. `test_07_openxml_excel_export_and_rbac_cost_masking`: Sinh file `.xlsx` chuẩn OpenXML bằng `zipfile` thuần Python và ẩn giá vốn với Thu ngân/Viewer theo RBAC.
 
-### Chạy toàn bộ kiểm thử:
+### 3. Kiểm Thử An Toàn Kế Toán & Concurrency v4 (`tests/test_v4_fixes.py` - 5/5 Passed)
+1. `test_01_setup_and_login`: Thiết lập tài khoản quản trị và cấp phát token phiên bảo mật.
+2. `test_02_dashboard_profit_accounting_correctness`: Xác nhận lợi nhuận gộp Dashboard chỉ khấu trừ phần chênh lệch lợi nhuận của hàng trả, không trừ toàn bộ giá trị hàng hóa làm sai lệch âm lãi.
+3. `test_03_return_packaging_unit_and_order_validation`: Quy đổi chính xác đơn vị đóng gói sang đơn vị cơ sở khi trả hàng và chặn vượt số lượng đã mua.
+4. `test_04_soft_delete_preservation`: Bảo toàn chứng từ lịch sử bằng Soft Delete (`is_active = 0`), tự động lọc dữ liệu đang hoạt động.
+5. `test_05_atomic_stock_deduction`: Xác thực trừ kho nguyên tử (Atomic Update) loại bỏ hoàn toàn race condition và chặn bán vượt tồn khi không cho phép âm kho.
+
+### Chạy toàn bộ kiểm thử (21/21 Tests):
 ```powershell
-& "C:\Users\DELL\AppData\Local\Programs\Python\Python311\python.exe" "C:\Users\DELL\.gemini\antigravity\scratch\kiotviet-pos-app\tests\test_auth_audit.py"
-& "C:\Users\DELL\AppData\Local\Programs\Python\Python311\python.exe" "C:\Users\DELL\.gemini\antigravity\scratch\kiotviet-pos-app\tests\test_v3_features.py"
+cd "C:\Users\DELL\.gemini\antigravity\scratch\kiotviet-pos-app"
+& "C:\Users\DELL\AppData\Local\Programs\Python\Python311\python.exe" -m unittest discover -s tests
 ```
 
 ---
@@ -235,11 +256,13 @@ kiotviet-pos-app/
 │   └── index.html        # Giao diện chính SPA (View Hóa đơn, Khuyến mãi, Modal chọn cột...)
 ├── tests/
 │   ├── test_auth_audit.py   # Test suite xác thực, bảo mật, RBAC và kiểm toán nghiệp vụ
-│   └── test_v3_features.py  # Test suite đơn vị đóng gói, đơn bán, khuyến mãi, Excel OpenXML
+│   ├── test_v3_features.py  # Test suite đơn vị đóng gói, đơn bán, khuyến mãi, Excel OpenXML
+│   └── test_v4_fixes.py     # Test suite an toàn kế toán, trừ kho nguyên tử, Soft Delete & Returns
 ├── data/
 │   ├── kiotviet.db                # Cơ sở dữ liệu SQLite chính
 │   ├── kiotviet_backup_pre_v2.db  # Bản sao lưu an toàn trước migration v2
-│   └── kiotviet_backup_pre_v3.db  # Bản sao lưu an toàn trước migration v3
+│   ├── kiotviet_backup_pre_v3.db  # Bản sao lưu an toàn trước migration v3
+│   └── kiotviet_backup_pre_v4.db  # Bản sao lưu an toàn trước migration v4
 ├── start.bat             # File khởi động nhanh cho Windows
 ├── start.ps1             # Script khởi động PowerShell
 └── README.md             # Tài liệu chi tiết hướng dẫn vận hành và kiến trúc

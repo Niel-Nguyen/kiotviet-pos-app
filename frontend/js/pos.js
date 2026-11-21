@@ -24,12 +24,18 @@ const POS = {
   storeSettings: {},
   applicablePromotions: [],
   selectedPromotion: null,
+  _isSubmitting: false,
+  cartTabs: [
+    { id: 1, name: 'Hóa đơn 1', cart: [], selectedCustomer: null, discountAmount: 0, vatPercent: 0, customerPaid: 0, paymentMethod: 'cash', notes: '', selectedPromotion: null }
+  ],
+  activeTabId: 1,
 
   async init() {
     await this.loadStoreSettings();
     await this.loadCustomers();
     await this.loadProducts();
     this.renderCategories();
+    this.renderCartTabs();
     this.setupEventListeners();
   },
 
@@ -359,6 +365,121 @@ const POS = {
     this.checkApplicablePromotions();
   },
 
+  renderCartTabs() {
+    const container = document.getElementById('pos-cart-tabs-bar');
+    if (!container) return;
+
+    let html = '';
+    this.cartTabs.forEach((tab) => {
+      const isActive = tab.id === this.activeTabId;
+      const count = (tab.cart || []).length;
+      html += `
+        <div class="pos-cart-tab ${isActive ? 'active' : ''}" onclick="POS.switchTab(${tab.id})">
+          <span>${tab.name}</span>
+          ${count > 0 ? `<span style="background: ${isActive ? 'var(--color-primary)' : '#94a3b8'}; color: #fff; font-size: 0.6875rem; padding: 1px 5px; border-radius: 10px;">${count}</span>` : ''}
+          ${this.cartTabs.length > 1 ? `<span class="pos-cart-tab-close" onclick="event.stopPropagation(); POS.closeTab(${tab.id});" title="Đóng tab">&times;</span>` : ''}
+        </div>
+      `;
+    });
+
+    if (this.cartTabs.length < 5) {
+      html += `<button class="pos-cart-tab-add" onclick="POS.addTab()" title="Thêm đơn mới (+)">+</button>`;
+    }
+    container.innerHTML = html;
+  },
+
+  saveCurrentTabState() {
+    const tab = this.cartTabs.find(t => t.id === this.activeTabId);
+    if (!tab) return;
+    tab.cart = [...this.cart];
+    tab.selectedCustomer = this.selectedCustomer;
+    tab.discountAmount = this.discountAmount;
+    tab.vatPercent = this.vatPercent;
+    tab.customerPaid = this.customerPaid;
+    tab.paymentMethod = this.paymentMethod;
+    tab.selectedPromotion = this.selectedPromotion;
+    tab.notes = (document.getElementById('pos-order-notes')?.value || '').trim();
+  },
+
+  switchTab(tabId) {
+    if (tabId === this.activeTabId) return;
+    this.saveCurrentTabState();
+    const nextTab = this.cartTabs.find(t => t.id === tabId);
+    if (!nextTab) return;
+
+    this.activeTabId = tabId;
+    this.cart = [...nextTab.cart];
+    this.selectedCustomer = nextTab.selectedCustomer;
+    this.discountAmount = nextTab.discountAmount || 0;
+    this.vatPercent = nextTab.vatPercent !== undefined ? nextTab.vatPercent : (parseFloat(this.storeSettings.default_vat_rate) || 0);
+    this.customerPaid = nextTab.customerPaid || 0;
+    this.paymentMethod = nextTab.paymentMethod || 'cash';
+    this.selectedPromotion = nextTab.selectedPromotion || null;
+
+    // Update UI elements
+    const custSelect = document.getElementById('pos-customer-select');
+    if (custSelect) custSelect.value = this.selectedCustomer ? this.selectedCustomer.id : '1';
+    const discInput = document.getElementById('pos-discount-input');
+    if (discInput) discInput.value = this.discountAmount;
+    const vatSelect = document.getElementById('pos-vat-select');
+    if (vatSelect) vatSelect.value = this.vatPercent;
+    const notesInput = document.getElementById('pos-order-notes');
+    if (notesInput) notesInput.value = nextTab.notes || '';
+
+    // Update payment method buttons
+    const methodBtns = document.querySelectorAll('.payment-method-btn');
+    methodBtns.forEach(b => {
+      b.classList.toggle('active', b.dataset.method === this.paymentMethod);
+    });
+
+    this.renderCart();
+    this.renderCartTabs();
+    this.updateCustomerDebtBadge();
+  },
+
+  addTab() {
+    if (this.cartTabs.length >= 5) {
+      App.toast('Tối đa 5 hóa đơn chờ cùng lúc!', 'warning');
+      return;
+    }
+    this.saveCurrentTabState();
+    const nextId = Math.max(...this.cartTabs.map(t => t.id), 0) + 1;
+    const newTab = {
+      id: nextId,
+      name: `Hóa đơn ${nextId}`,
+      cart: [],
+      selectedCustomer: null,
+      discountAmount: 0,
+      vatPercent: parseFloat(this.storeSettings.default_vat_rate) || 0,
+      customerPaid: 0,
+      paymentMethod: 'cash',
+      selectedPromotion: null,
+      notes: ''
+    };
+    this.cartTabs.push(newTab);
+    this.switchTab(nextId);
+  },
+
+  closeTab(tabId) {
+    if (this.cartTabs.length <= 1) return;
+    const tabIndex = this.cartTabs.findIndex(t => t.id === tabId);
+    if (tabIndex === -1) return;
+    const tab = this.cartTabs[tabIndex];
+    if (tab.cart && tab.cart.length > 0) {
+      if (!confirm(`Hóa đơn '${tab.name}' đang có sản phẩm. Bạn có chắc muốn đóng không?`)) {
+        return;
+      }
+    }
+    this.cartTabs.splice(tabIndex, 1);
+    if (this.activeTabId === tabId) {
+      const nextTab = this.cartTabs[Math.max(0, tabIndex - 1)];
+      this.activeTabId = null;
+      this.switchTab(nextTab.id);
+    } else {
+      this.renderCartTabs();
+    }
+  },
+
   clearCart() {
     this.cart = [];
     this.discountAmount = 0;
@@ -376,8 +497,10 @@ const POS = {
     const notesInput = document.getElementById('pos-order-notes');
     if (notesInput) notesInput.value = '';
 
+    this.saveCurrentTabState();
     this.renderPromotionsSelect();
     this.renderCart();
+    this.renderCartTabs();
   },
 
   renderCart() {
@@ -595,6 +718,8 @@ const POS = {
   },
 
   async checkout(isPending = false) {
+    if (this._isSubmitting) return;
+
     if (this.cart.length === 0) {
       App.toast('Giỏ hàng đang trống!', 'warning');
       return;
@@ -636,6 +761,14 @@ const POS = {
       notes: notes
     };
 
+    this._isSubmitting = true;
+    const checkoutBtn = document.getElementById('pos-btn-checkout');
+    const pendingBtn = document.getElementById('pos-btn-pending');
+    const origCheckoutHtml = checkoutBtn ? checkoutBtn.innerHTML : '';
+    const origPendingHtml = pendingBtn ? pendingBtn.innerHTML : '';
+    if (checkoutBtn) { checkoutBtn.disabled = true; checkoutBtn.innerHTML = 'Đang xử lý...'; }
+    if (pendingBtn) { pendingBtn.disabled = true; }
+
     try {
       const res = await API.createOrder(orderData);
       if (isPending) {
@@ -672,6 +805,10 @@ const POS = {
       }
     } catch (err) {
       App.toast(`Lỗi thanh toán: ${err.message}`, 'error');
+    } finally {
+      this._isSubmitting = false;
+      if (checkoutBtn) { checkoutBtn.disabled = false; checkoutBtn.innerHTML = origCheckoutHtml; }
+      if (pendingBtn) { pendingBtn.disabled = false; pendingBtn.innerHTML = origPendingHtml; }
     }
   },
 
@@ -893,6 +1030,33 @@ const POS = {
         e.target.classList.add('active');
         this.paymentMethod = e.target.dataset.method;
       });
+    });
+
+    // Global keyboard shortcuts for POS
+    window.addEventListener('keydown', (e) => {
+      const posSection = document.getElementById('view-pos');
+      if (!posSection || posSection.style.display === 'none') return;
+
+      if (e.key === 'F2') {
+        e.preventDefault();
+        const searchInput = document.getElementById('pos-search-input');
+        if (searchInput) {
+          searchInput.focus();
+          searchInput.select();
+        }
+      } else if (e.key === 'F4') {
+        e.preventDefault();
+        const customerSelect = document.getElementById('pos-customer-select');
+        if (customerSelect) {
+          customerSelect.focus();
+        }
+      } else if (e.key === 'F8') {
+        e.preventDefault();
+        this.checkout(false);
+      } else if (e.key === 'F6') {
+        e.preventDefault();
+        this.checkout(true);
+      }
     });
   }
 };

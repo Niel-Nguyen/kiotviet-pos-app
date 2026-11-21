@@ -63,9 +63,14 @@ def format_stock_breakdown(stock, units):
     return f"-({res})" if is_neg else res
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except Exception:
+        pass
     return conn
 
 def init_db():
@@ -300,6 +305,7 @@ def backup_db_before_migration():
         backup_dir = os.path.dirname(DB_FILE)
         pre_v2_backup = os.path.join(backup_dir, 'kiotviet_backup_pre_v2.db')
         pre_v3_backup = os.path.join(backup_dir, 'kiotviet_backup_pre_v3.db')
+        pre_v4_backup = os.path.join(backup_dir, 'kiotviet_backup_pre_v4.db')
         try:
             import shutil
             if not os.path.exists(pre_v2_backup):
@@ -308,6 +314,9 @@ def backup_db_before_migration():
             if not os.path.exists(pre_v3_backup):
                 shutil.copy2(DB_FILE, pre_v3_backup)
                 print(f"[Backup] Đã tự động sao lưu an toàn v3 cơ sở dữ liệu: {pre_v3_backup}")
+            if not os.path.exists(pre_v4_backup):
+                shutil.copy2(DB_FILE, pre_v4_backup)
+                print(f"[Backup] Đã tự động sao lưu an toàn v4 cơ sở dữ liệu: {pre_v4_backup}")
         except Exception as e:
             print(f"[Backup Warning] Không thể sao lưu tự động: {e}")
 
@@ -577,6 +586,22 @@ def apply_migrations(conn):
         cursor.execute("INSERT INTO schema_migrations (version, name, applied_at) VALUES (3, 'v3_units_promotions_orders', ?)", (now_str,))
         conn.commit()
         print("[Migration] Applied Migration v3: v3_units_promotions_orders successfully!")
+
+    # MIGRATION V4: Accounting Safety, Soft-Delete & Data Integrity
+    if 4 not in applied_versions:
+        print("[Migration] Applying Migration v4: v4_accounting_safety_and_soft_delete...")
+        
+        # 1. Add is_active column to products, customers, suppliers
+        for tbl in ('products', 'customers', 'suppliers'):
+            cursor.execute(f"PRAGMA table_info({tbl})")
+            cols = [r['name'] for r in cursor.fetchall()]
+            if 'is_active' not in cols:
+                cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN is_active INTEGER DEFAULT 1")
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_active ON {tbl}(is_active)")
+
+        cursor.execute("INSERT INTO schema_migrations (version, name, applied_at) VALUES (4, 'v4_accounting_safety_and_soft_delete', ?)", (now_str,))
+        conn.commit()
+        print("[Migration] Applied Migration v4: v4_accounting_safety_and_soft_delete successfully!")
 
 def migrate_columns(conn):
     """Backward compatibility stub redirecting to apply_migrations."""

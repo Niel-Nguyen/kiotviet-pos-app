@@ -37,9 +37,15 @@ def get_now_str():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def generate_code(prefix, table_name, cursor):
-    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-    count = cursor.fetchone()[0] + 1
-    return f"{prefix}{count:04d}"
+    cursor.execute(f"SELECT COALESCE(MAX(id), 0) + 1 FROM {table_name}")
+    next_id = cursor.fetchone()[0]
+    candidate = f"{prefix}{next_id:04d}"
+    cursor.execute(f"SELECT 1 FROM {table_name} WHERE code = ?", (candidate,))
+    while cursor.fetchone():
+        next_id += 1
+        candidate = f"{prefix}{next_id:04d}"
+        cursor.execute(f"SELECT 1 FROM {table_name} WHERE code = ?", (candidate,))
+    return candidate
 
 def get_lan_ip():
     try:
@@ -815,19 +821,29 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 ret_row = cursor.fetchone()
                 total_returns = ret_row['total_returns'] if ret_row else 0
 
-                net_sales = sales_row['total_sales'] - total_returns
-                net_profit = sales_row['total_profit'] - total_returns
+                # Accounting correctness: only deduct return margin (return_price - cost_price), not whole inventory value!
+                cursor.execute(f"""
+                    SELECT COALESCE(SUM((ri.return_price - ri.cost_price) * COALESCE(ri.base_quantity, ri.quantity)), 0) as return_profit_loss
+                    FROM return_items ri
+                    JOIN returns r ON ri.return_id = r.id
+                    WHERE 1=1 {date_sql.replace('created_at', 'r.created_at')}
+                """, params)
+                ret_p_row = cursor.fetchone()
+                return_profit_loss = ret_p_row['return_profit_loss'] if ret_p_row else 0
 
-                cursor.execute("SELECT COALESCE(SUM(stock * cost_price), 0) as total_val, COUNT(id) as total_prods FROM products")
+                net_sales = max(0, sales_row['total_sales'] - total_returns)
+                net_profit = sales_row['total_profit'] - return_profit_loss
+
+                cursor.execute("SELECT COALESCE(SUM(stock * cost_price), 0) as total_val, COUNT(id) as total_prods FROM products WHERE COALESCE(is_active, 1) = 1")
                 inv_row = cursor.fetchone()
 
-                cursor.execute("SELECT COUNT(id) as low_stock FROM products WHERE stock <= min_stock")
+                cursor.execute("SELECT COUNT(id) as low_stock FROM products WHERE stock <= min_stock AND COALESCE(is_active, 1) = 1")
                 low_stock = cursor.fetchone()['low_stock']
 
-                cursor.execute("SELECT COALESCE(SUM(debt), 0) as total_cust_debt FROM customers")
+                cursor.execute("SELECT COALESCE(SUM(debt), 0) as total_cust_debt FROM customers WHERE COALESCE(is_active, 1) = 1")
                 cust_debt = cursor.fetchone()['total_cust_debt']
 
-                cursor.execute("SELECT COALESCE(SUM(debt), 0) as total_sup_debt FROM suppliers")
+                cursor.execute("SELECT COALESCE(SUM(debt), 0) as total_sup_debt FROM suppliers WHERE COALESCE(is_active, 1) = 1")
                 sup_debt = cursor.fetchone()['total_sup_debt']
 
                 cursor.execute("SELECT COALESCE(SUM(amount), 0) as total_rec FROM cash_flow WHERE type = 'receipt'")
@@ -849,7 +865,9 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 bank_balance = rec_bank - pay_bank
 
                 cursor.execute(f"""
-                    SELECT p.id, p.name, p.code, p.unit, SUM(oi.quantity) as sold_qty, SUM(oi.subtotal) as sold_amount
+                    SELECT p.id, p.name, p.code, p.unit, 
+                           ROUND(SUM(COALESCE(oi.base_quantity, oi.quantity)), 2) as sold_qty, 
+                           SUM(oi.subtotal) as sold_amount
                     FROM order_items oi
                     JOIN orders o ON oi.order_id = o.id
                     JOIN products p ON oi.product_id = p.id
@@ -898,7 +916,10 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 category = query.get('category', [''])[0].strip()
                 flt = query.get('filter', [''])[0].strip()
 
+                include_inactive = query.get('include_inactive', ['0'])[0] == '1'
                 sql = "SELECT p.* FROM products p WHERE 1=1"
+                if not include_inactive:
+                    sql += " AND COALESCE(p.is_active, 1) = 1"
                 params = []
                 if q:
                     sql += " AND (p.name LIKE ? OR p.code LIKE ? OR p.barcode LIKE ? OR p.id IN (SELECT product_id FROM product_units WHERE barcode LIKE ?))"
@@ -971,6 +992,7 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 q = query.get('search', query.get('q', ['']))[0].strip()
+                include_inactive = query.get('include_inactive', ['0'])[0] == '1'
                 sql = """
                     SELECT c.*,
                         COALESCE((SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id AND o.status = 'pending'), 0) as pending_orders_count,
@@ -978,6 +1000,8 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     FROM customers c
                     WHERE 1=1
                 """
+                if not include_inactive:
+                    sql += " AND COALESCE(c.is_active, 1) = 1"
                 c_params = []
                 if q:
                     sql += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.code LIKE ? OR c.email LIKE ?)"
@@ -1070,7 +1094,10 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 q = query.get('search', query.get('q', ['']))[0].strip()
+                include_inactive = query.get('include_inactive', ['0'])[0] == '1'
                 sql = "SELECT * FROM suppliers WHERE 1=1"
+                if not include_inactive:
+                    sql += " AND COALESCE(is_active, 1) = 1"
                 params = []
                 if q:
                     sql += " AND (name LIKE ? OR phone LIKE ? OR code LIKE ? OR email LIKE ?)"
@@ -2172,13 +2199,31 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     """, (order_id, it['product_id'], it['product_code'], it['product_name'], it['unit'], it['quantity'], it['conversion_rate'], it['base_quantity'], it['cost_price'], it['sale_price'], it['is_custom_price'], it['subtotal']))
 
                     if order_status == 'completed':
-                        new_stock = it['current_stock'] - it['base_quantity']
-                        cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
+                        if not allow_negative_stock:
+                            cursor.execute("""
+                                UPDATE products
+                                SET stock = stock - ?, updated_at = ?
+                                WHERE id = ? AND stock >= ?
+                            """, (it['base_quantity'], now, it['product_id'], it['base_quantity']))
+                            if cursor.rowcount == 0:
+                                conn.rollback()
+                                self.send_error_json(f"Sản phẩm '{it['product_name']}' không đủ tồn kho để xuất bán (đã bị quầy khác bán)", 400)
+                                return
+                        else:
+                            cursor.execute("""
+                                UPDATE products
+                                SET stock = stock - ?, updated_at = ?
+                                WHERE id = ?
+                            """, (it['base_quantity'], now, it['product_id']))
+
+                        cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
+                        new_stock = cursor.fetchone()['stock']
+                        stock_before = new_stock + it['base_quantity']
 
                         cursor.execute("""
                             INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
                             VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (it['product_id'], code, -it['base_quantity'], it['current_stock'], new_stock, f"Xuất bán {it['quantity']} {it['unit']} theo hóa đơn {code}", now, user['id'], user['full_name']))
+                        """, (it['product_id'], code, -it['base_quantity'], stock_before, new_stock, f"Xuất bán {it['quantity']} {it['unit']} theo hóa đơn {code}", now, user['id'], user['full_name']))
 
                     if it.get('save_as_custom') and customer_id and customer_id != 1:
                         # Save base price
@@ -2307,15 +2352,30 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 now = get_now_str()
                 for it in order_items:
                     base_qty = float(it['base_quantity'] if it['base_quantity'] is not None else it['quantity'])
-                    cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
-                    p = cursor.fetchone()
-                    if p:
-                        new_stock = p['stock'] - base_qty
-                        cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
+                    if not allow_negative_stock:
                         cursor.execute("""
-                            INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
-                            VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (it['product_id'], order['code'], -base_qty, p['stock'], new_stock, f"Xuất bán khi hoàn tất hóa đơn {order['code']}", now, user['id'], user['full_name']))
+                            UPDATE products 
+                            SET stock = stock - ?, updated_at = ?
+                            WHERE id = ? AND stock >= ?
+                        """, (base_qty, now, it['product_id'], base_qty))
+                        if cursor.rowcount == 0:
+                            conn.rollback()
+                            self.send_error_json(f"Sản phẩm ID {it['product_id']} không đủ tồn kho để xuất bán", 400)
+                            return
+                    else:
+                        cursor.execute("""
+                            UPDATE products 
+                            SET stock = stock - ?, updated_at = ?
+                            WHERE id = ?
+                        """, (base_qty, now, it['product_id']))
+
+                    cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
+                    new_stock = cursor.fetchone()['stock']
+                    stock_before = new_stock + base_qty
+                    cursor.execute("""
+                        INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
+                        VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (it['product_id'], order['code'], -base_qty, stock_before, new_stock, f"Xuất bán khi hoàn tất hóa đơn {order['code']}", now, user['id'], user['full_name']))
 
                 if paid_amount > 0 and payment_method != 'debt':
                     rec_code = generate_code('PT', 'cash_flow', cursor)
@@ -2387,15 +2447,16 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     order_items = cursor.fetchall()
                     for it in order_items:
                         base_qty = float(it['base_quantity'] if it['base_quantity'] is not None else it['quantity'])
-                        cursor.execute("SELECT stock, name, unit FROM products WHERE id = ?", (it['product_id'],))
-                        prod = cursor.fetchone()
-                        if prod:
-                            new_stock = prod['stock'] + base_qty
-                            cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
+                        cursor.execute("UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?", (base_qty, now, it['product_id']))
+                        cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
+                        st_row = cursor.fetchone()
+                        if st_row:
+                            new_stock = st_row['stock']
+                            stock_before = new_stock - base_qty
                             cursor.execute("""
                                 INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
                                 VALUES (?, 'adjustment', ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (it['product_id'], order['code'], base_qty, prod['stock'], new_stock, f"Hoàn tồn do hủy hóa đơn {order['code']}: {reason}", now, user['id'], user['full_name']))
+                            """, (it['product_id'], order['code'], base_qty, stock_before, new_stock, f"Hoàn tồn do hủy hóa đơn {order['code']}: {reason}", now, user['id'], user['full_name']))
 
                     if order['customer_id'] and order['customer_id'] != 1:
                         cursor.execute("""
@@ -2799,20 +2860,73 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 now = get_now_str()
 
                 order_code = None
+                order_row = None
                 if order_id:
-                    cursor.execute("SELECT code FROM orders WHERE id = ?", (order_id,))
-                    ord_r = cursor.fetchone()
-                    if ord_r:
-                        order_code = ord_r['code']
+                    cursor.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+                    order_row = cursor.fetchone()
+                    if order_row:
+                        order_code = order_row['code']
+                    else:
+                        self.send_error_json("Hóa đơn gốc không tồn tại", 404)
+                        return
 
                 total_amount = 0
+                processed_return_items = []
                 for it in items:
                     qty = float(it.get('quantity', 0))
                     price = float(it.get('return_price', 0))
                     if qty <= 0 or price < 0:
                         self.send_error_json("Số lượng hoặc giá trả hàng không hợp lệ", 400)
                         return
-                    total_amount += qty * price
+
+                    cursor.execute("SELECT * FROM products WHERE id = ?", (it['product_id'],))
+                    p = cursor.fetchone()
+                    if not p:
+                        self.send_error_json(f"Sản phẩm ID {it['product_id']} không tồn tại", 400)
+                        return
+
+                    unit_name = (it.get('unit_name') or it.get('unit') or p['unit'] or 'Cái').strip()
+                    conversion_rate = 1.0
+                    cursor.execute("SELECT conversion_rate FROM product_units WHERE product_id = ? AND unit_name = ?", (p['id'], unit_name))
+                    u_row = cursor.fetchone()
+                    if u_row:
+                        conversion_rate = float(u_row['conversion_rate'])
+                    elif it.get('conversion_rate'):
+                        conversion_rate = float(it['conversion_rate'])
+                    base_qty = round(qty * conversion_rate, 4)
+
+                    if order_id:
+                        cursor.execute("SELECT * FROM order_items WHERE order_id = ? AND product_id = ?", (order_id, p['id']))
+                        oi = cursor.fetchone()
+                        if not oi:
+                            self.send_error_json(f"Sản phẩm '{p['name']}' không có trong hóa đơn gốc {order_code}", 400)
+                            return
+                        cursor.execute("""
+                            SELECT COALESCE(SUM(ri.base_quantity), 0) as ret_base
+                            FROM return_items ri
+                            JOIN returns r ON ri.return_id = r.id
+                            WHERE r.order_id = ? AND ri.product_id = ?
+                        """, (order_id, p['id']))
+                        prev_ret_base = float(cursor.fetchone()['ret_base'])
+                        purchased_base = float(oi['base_quantity'] if oi['base_quantity'] is not None else oi['quantity'])
+                        if (prev_ret_base + base_qty) > (purchased_base + 0.0001):
+                            remaining_base = max(0, purchased_base - prev_ret_base)
+                            self.send_error_json(f"Số lượng trả cho '{p['name']}' vượt quá số lượng đã mua ({remaining_base:g} đơn vị cơ sở còn lại)", 400)
+                            return
+
+                    subtotal = round(qty * price, 2)
+                    total_amount += subtotal
+                    processed_return_items.append({
+                        "product_id": p['id'],
+                        "product_name": p['name'],
+                        "unit": unit_name,
+                        "quantity": qty,
+                        "conversion_rate": conversion_rate,
+                        "base_quantity": base_qty,
+                        "return_price": price,
+                        "cost_price": p['cost_price'],
+                        "subtotal": subtotal
+                    })
 
                 if (refund_amount + debt_deduct_amount) > total_amount:
                     self.send_error_json("Tổng tiền hoàn lại và cấn trừ nợ không được vượt quá giá trị hàng trả", 400)
@@ -2833,30 +2947,22 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 """, (code, order_id, customer_id, customer_name, total_amount, refund_amount, debt_deduct_amount, fund_type, notes, now, user['id'], user['full_name']))
                 ret_id = cursor.lastrowid
 
-                for it in items:
-                    cursor.execute("SELECT * FROM products WHERE id = ?", (it['product_id'],))
-                    p = cursor.fetchone()
-                    if not p:
-                        continue
-
-                    qty = float(it['quantity'])
-                    ret_price = float(it['return_price'])
-                    cost_price = p['cost_price']
-                    subtotal = qty * ret_price
-
+                for it in processed_return_items:
                     cursor.execute("""
-                        INSERT INTO return_items (return_id, product_id, product_name, unit, quantity, return_price, cost_price, subtotal)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (ret_id, p['id'], p['name'], p['unit'], qty, ret_price, cost_price, subtotal))
+                        INSERT INTO return_items (return_id, product_id, product_name, unit, quantity, conversion_rate, base_quantity, return_price, cost_price, subtotal)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (ret_id, it['product_id'], it['product_name'], it['unit'], it['quantity'], it['conversion_rate'], it['base_quantity'], it['return_price'], it['cost_price'], it['subtotal']))
 
-                    old_stock = p['stock']
-                    new_stock = old_stock + qty
-                    cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, p['id']))
+                    cursor.execute("UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?", (it['base_quantity'], now, it['product_id']))
+                    cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
+                    st_row = cursor.fetchone()
+                    new_stock = st_row['stock'] if st_row else 0
+                    old_stock = new_stock - it['base_quantity']
 
                     cursor.execute("""
                         INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
                         VALUES (?, 'return', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (p['id'], code, qty, old_stock, new_stock, f"Khách trả hàng theo phiếu {code}" + (f" (HĐ gốc: {order_code})" if order_code else ""), now, user['id'], user['full_name']))
+                    """, (it['product_id'], code, it['base_quantity'], old_stock, new_stock, f"Khách trả hàng {it['quantity']} {it['unit']} theo phiếu {code}" + (f" (HĐ gốc: {order_code})" if order_code else ""), now, user['id'], user['full_name']))
 
                 if refund_amount > 0:
                     pay_code = generate_code('PC', 'cash_flow', cursor)
@@ -2865,8 +2971,10 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                         VALUES (?, 'payment', 'Hoàn tiền trả hàng', ?, 'customer', ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (pay_code, refund_amount, customer_id, customer_name, fund_type, code, f"Hoàn tiền khách trả hàng theo phiếu {code}", now, user['id'], user['full_name']))
 
-                if customer_id and debt_deduct_amount > 0:
-                    cursor.execute("UPDATE customers SET debt = MAX(0, debt - ?) WHERE id = ?", (debt_deduct_amount, customer_id))
+                if customer_id and customer_id != 1:
+                    if debt_deduct_amount > 0:
+                        cursor.execute("UPDATE customers SET debt = MAX(0, debt - ?) WHERE id = ?", (debt_deduct_amount, customer_id))
+                    cursor.execute("UPDATE customers SET total_spent = MAX(0, total_spent - ?) WHERE id = ?", (total_amount, customer_id))
 
                 auth.log_audit(
                     cursor=cursor,
@@ -3415,16 +3523,31 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 cursor.execute("SELECT code, name FROM products WHERE id = ?", (pid,))
                 p = cursor.fetchone()
                 if p:
-                    cursor.execute("DELETE FROM products WHERE id = ?", (pid,))
+                    cursor.execute("SELECT COUNT(*) FROM order_items WHERE product_id = ?", (pid,))
+                    has_orders = cursor.fetchone()[0] > 0
+                    cursor.execute("SELECT COUNT(*) FROM purchase_items WHERE product_id = ?", (pid,))
+                    has_purchases = cursor.fetchone()[0] > 0
+                    cursor.execute("SELECT COUNT(*) FROM return_items WHERE product_id = ?", (pid,))
+                    has_returns = cursor.fetchone()[0] > 0
+
+                    if has_orders or has_purchases or has_returns:
+                        cursor.execute("UPDATE products SET is_active = 0, updated_at = ? WHERE id = ?", (get_now_str(), pid))
+                        action_name = 'PRODUCT_DEACTIVATE'
+                        detail_msg = 'Ngừng kinh doanh (đã có phát sinh giao dịch)'
+                    else:
+                        cursor.execute("DELETE FROM products WHERE id = ?", (pid,))
+                        action_name = 'PRODUCT_DELETE'
+                        detail_msg = 'Xóa hoàn toàn'
+
                     auth.log_audit(
                         cursor=cursor,
                         user_id=user['id'],
                         user_name=user['full_name'],
-                        action='PRODUCT_DELETE',
+                        action=action_name,
                         entity_type='product',
                         entity_id=pid,
                         entity_code=p['code'],
-                        details={'deleted_product': p['name']},
+                        details={'deleted_product': p['name'], 'mode': detail_msg},
                         ip_address=client_ip
                     )
                     conn.commit()
@@ -3436,19 +3559,35 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 cid = path.split('/')[3]
-                cursor.execute("SELECT code, name FROM customers WHERE id = ?", (cid,))
+                if str(cid) == '1':
+                    self.send_error_json("Không thể xóa khách lẻ mặc định", 400)
+                    return
+                cursor.execute("SELECT code, name, debt FROM customers WHERE id = ?", (cid,))
                 c = cursor.fetchone()
                 if c:
-                    cursor.execute("DELETE FROM customers WHERE id = ?", (cid,))
+                    if c['debt'] and float(c['debt']) > 0:
+                        self.send_error_json(f"Không thể xóa khách hàng đang còn dư nợ {float(c['debt']):,.0f} đ", 400)
+                        return
+                    cursor.execute("SELECT COUNT(*) FROM orders WHERE customer_id = ?", (cid,))
+                    has_orders = cursor.fetchone()[0] > 0
+                    if has_orders:
+                        cursor.execute("UPDATE customers SET is_active = 0 WHERE id = ?", (cid,))
+                        action_name = 'CUSTOMER_DEACTIVATE'
+                        detail_msg = 'Ngừng giao dịch (đã có phát sinh đơn hàng)'
+                    else:
+                        cursor.execute("DELETE FROM customers WHERE id = ?", (cid,))
+                        action_name = 'CUSTOMER_DELETE'
+                        detail_msg = 'Xóa hoàn toàn'
+
                     auth.log_audit(
                         cursor=cursor,
                         user_id=user['id'],
                         user_name=user['full_name'],
-                        action='CUSTOMER_DELETE',
+                        action=action_name,
                         entity_type='customer',
                         entity_id=cid,
                         entity_code=c['code'],
-                        details={'deleted_customer': c['name']},
+                        details={'deleted_customer': c['name'], 'mode': detail_msg},
                         ip_address=client_ip
                     )
                     conn.commit()
@@ -3460,19 +3599,32 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 sid = path.split('/')[3]
-                cursor.execute("SELECT code, name FROM suppliers WHERE id = ?", (sid,))
+                cursor.execute("SELECT code, name, debt FROM suppliers WHERE id = ?", (sid,))
                 s = cursor.fetchone()
                 if s:
-                    cursor.execute("DELETE FROM suppliers WHERE id = ?", (sid,))
+                    if s['debt'] and float(s['debt']) > 0:
+                        self.send_error_json(f"Không thể xóa nhà cung cấp đang còn nợ {float(s['debt']):,.0f} đ", 400)
+                        return
+                    cursor.execute("SELECT COUNT(*) FROM purchases WHERE supplier_id = ?", (sid,))
+                    has_purchases = cursor.fetchone()[0] > 0
+                    if has_purchases:
+                        cursor.execute("UPDATE suppliers SET is_active = 0 WHERE id = ?", (sid,))
+                        action_name = 'SUPPLIER_DEACTIVATE'
+                        detail_msg = 'Ngừng giao dịch (đã có phát sinh nhập hàng)'
+                    else:
+                        cursor.execute("DELETE FROM suppliers WHERE id = ?", (sid,))
+                        action_name = 'SUPPLIER_DELETE'
+                        detail_msg = 'Xóa hoàn toàn'
+
                     auth.log_audit(
                         cursor=cursor,
                         user_id=user['id'],
                         user_name=user['full_name'],
-                        action='SUPPLIER_DELETE',
+                        action=action_name,
                         entity_type='supplier',
                         entity_id=sid,
                         entity_code=s['code'],
-                        details={'deleted_supplier': s['name']},
+                        details={'deleted_supplier': s['name'], 'mode': detail_msg},
                         ip_address=client_ip
                     )
                     conn.commit()

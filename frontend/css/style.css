@@ -865,6 +865,85 @@ textarea.form-control {
   height: 100%;
 }
 
+/* Multi-Cart Tabs Bar */
+.pos-cart-tabs-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background-color: #f1f5f9;
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+}
+
+.pos-cart-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  background-color: #e2e8f0;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border: 1px solid transparent;
+  user-select: none;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.pos-cart-tab:hover {
+  background-color: #cbd5e1;
+  color: var(--color-text);
+}
+
+.pos-cart-tab.active {
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-weight: 700;
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.pos-cart-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  transition: background 0.15s;
+}
+
+.pos-cart-tab-close:hover {
+  background-color: #fee2e2;
+  color: var(--color-danger);
+}
+
+.pos-cart-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed #94a3b8;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pos-cart-tab-add:hover {
+  background: var(--color-surface);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 .pos-customer-bar {
   padding: 10px 14px;
   border-bottom: 1px solid var(--color-border);
