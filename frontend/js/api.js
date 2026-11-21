@@ -245,8 +245,9 @@ const API = {
   },
 
   // Orders / Sales (Output)
-  getOrders() {
-    return this.request('/api/orders');
+  getOrders(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/orders${qs ? '?' + qs : ''}`);
   },
   getOrder(id) {
     return this.request(`/api/orders/${id}`);
@@ -256,6 +257,119 @@ const API = {
       method: 'POST',
       body: JSON.stringify(data)
     });
+  },
+  completeOrder(id, data = {}) {
+    return this.request(`/api/orders/${id}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  cancelOrder(id, reason = '') {
+    return this.request(`/api/orders/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
+    });
+  },
+  duplicateOrder(id) {
+    return this.request(`/api/orders/${id}/duplicate`, {
+      method: 'POST'
+    });
+  },
+  updateOrder(id, data) {
+    return this.request(`/api/orders/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  getCustomerPendingOrders(customerId) {
+    return this.request(`/api/customers/${customerId}/pending-orders`);
+  },
+
+  // Multi-level Product Units
+  getProductUnits(productId) {
+    return this.request(`/api/products/${productId}/units`);
+  },
+  saveProductUnit(productId, data) {
+    return this.request(`/api/products/${productId}/units`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  updateProductUnit(unitId, data) {
+    return this.request(`/api/product-units/${unitId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  deleteProductUnit(unitId) {
+    return this.request(`/api/product-units/${unitId}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // Promotions
+  getPromotions(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/promotions${qs ? '?' + qs : ''}`);
+  },
+  getPromotion(id) {
+    return this.request(`/api/promotions/${id}`);
+  },
+  createPromotion(data) {
+    return this.request('/api/promotions', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  updatePromotion(id, data) {
+    return this.request(`/api/promotions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  deletePromotion(id) {
+    return this.request(`/api/promotions/${id}`, {
+      method: 'DELETE'
+    });
+  },
+  checkPromotions(data) {
+    return this.request('/api/promotions/check', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  // Excel Export (.xlsx)
+  async downloadExport(entity, params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    const url = `/api/export/${entity}${qs ? '?' + qs : ''}`;
+    const defaultHeaders = {};
+    if (this.token) {
+      defaultHeaders['Authorization'] = `Bearer ${this.token}`;
+    }
+    const response = await fetch(url, {
+      credentials: 'same-origin',
+      headers: defaultHeaders
+    });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.message || `Lỗi xuất file Excel (${response.status})`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    let filename = `${entity}.xlsx`;
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    if (match && match[1]) filename = match[1];
+
+    const blobUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(blobUrl);
+    return filename;
   },
 
   // Purchases / Goods Receipt (Input)

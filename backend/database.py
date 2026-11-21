@@ -23,6 +23,45 @@ DATA_DIR = (
 )
 DB_FILE = os.path.join(DATA_DIR, 'kiotviet.db')
 
+def format_stock_breakdown(stock, units):
+    """
+    Format stock quantity into multi-level packaging units and remainder.
+    E.g., 383 lon with units [Thùng(36), Lốc(6), Lon(1)] -> '10 Thùng, 3 Lốc, 5 Lon'.
+    Preserves decimals without precision loss.
+    """
+    if not units:
+        return f"{stock:g}"
+    valid_units = [u for u in units if float(u.get('conversion_rate', 1)) > 0]
+    if not valid_units:
+        return f"{stock:g}"
+    sorted_units = sorted(valid_units, key=lambda u: float(u['conversion_rate']), reverse=True)
+    base_unit = next((u for u in sorted_units if u.get('is_base') or float(u['conversion_rate']) == 1.0), sorted_units[-1])
+    
+    if stock == 0:
+        return f"0 {base_unit['unit_name']}"
+    
+    is_neg = stock < 0
+    rem = round(abs(stock), 6)
+    parts = []
+    
+    for i, u in enumerate(sorted_units):
+        rate = float(u['conversion_rate'])
+        is_last = (i == len(sorted_units) - 1)
+        if is_last:
+            if rem > 0 or len(parts) == 0:
+                qty_str = f"{rem:g}"
+                parts.append(f"{qty_str} {u['unit_name']}")
+            rem = 0
+        else:
+            if rem >= rate:
+                cnt = int(rem // rate)
+                rem = round(rem - (cnt * rate), 6)
+                if cnt > 0:
+                    parts.append(f"{cnt} {u['unit_name']}")
+    
+    res = ", ".join(parts) if parts else f"0 {base_unit['unit_name']}"
+    return f"-({res})" if is_neg else res
+
 def get_db():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
@@ -260,13 +299,17 @@ def backup_db_before_migration():
     if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0:
         backup_dir = os.path.dirname(DB_FILE)
         pre_v2_backup = os.path.join(backup_dir, 'kiotviet_backup_pre_v2.db')
-        if not os.path.exists(pre_v2_backup):
-            try:
-                import shutil
+        pre_v3_backup = os.path.join(backup_dir, 'kiotviet_backup_pre_v3.db')
+        try:
+            import shutil
+            if not os.path.exists(pre_v2_backup):
                 shutil.copy2(DB_FILE, pre_v2_backup)
                 print(f"[Backup] Đã tự động sao lưu an toàn cơ sở dữ liệu: {pre_v2_backup}")
-            except Exception as e:
-                print(f"[Backup Warning] Không thể sao lưu tự động: {e}")
+            if not os.path.exists(pre_v3_backup):
+                shutil.copy2(DB_FILE, pre_v3_backup)
+                print(f"[Backup] Đã tự động sao lưu an toàn v3 cơ sở dữ liệu: {pre_v3_backup}")
+        except Exception as e:
+            print(f"[Backup Warning] Không thể sao lưu tự động: {e}")
 
 def apply_migrations(conn):
     """
@@ -397,6 +440,143 @@ def apply_migrations(conn):
         cursor.execute("INSERT INTO schema_migrations (version, name, applied_at) VALUES (2, 'v2_auth_rbac_audit', ?)", (now_str,))
         conn.commit()
         print("[Migration] Applied Migration v2: v2_auth_rbac_audit successfully!")
+
+    # MIGRATION V3: Multi-level units, Promotions & Extended Order Management
+    if 3 not in applied_versions:
+        print("[Migration] Applying Migration v3: v3_units_promotions_orders...")
+        
+        # 1. Product Units table (Đơn vị tính và quy đổi nhiều cấp)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS product_units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            unit_name TEXT NOT NULL,
+            conversion_rate REAL NOT NULL, -- Số lượng đơn vị cơ sở (> 0)
+            sale_price REAL,              -- Giá bán riêng theo đơn vị này
+            cost_price REAL,              -- Giá vốn theo đơn vị này
+            barcode TEXT,                 -- Mã vạch riêng của đơn vị đóng gói
+            is_base INTEGER DEFAULT 0,    -- 1 nếu là đơn vị cơ sở
+            is_default_sale INTEGER DEFAULT 0,
+            created_at TEXT,
+            UNIQUE(product_id, unit_name)
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_prod_units_prod ON product_units(product_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_prod_units_barcode ON product_units(barcode)")
+
+        # 2. Promotions table (Chương trình khuyến mãi)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS promotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            scope TEXT NOT NULL DEFAULT 'order', -- 'order', 'category', 'product'
+            target_id INTEGER,
+            target_category TEXT,
+            discount_type TEXT NOT NULL DEFAULT 'percent', -- 'percent', 'fixed'
+            discount_value REAL NOT NULL,
+            min_order_amount REAL DEFAULT 0,
+            customer_group TEXT DEFAULT 'all',
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_promotions_active ON promotions(is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_promotions_dates ON promotions(start_date, end_date)")
+
+        # 3. Add columns to orders
+        cursor.execute("PRAGMA table_info(orders)")
+        order_cols = [r['name'] for r in cursor.fetchall()]
+        if 'promotion_id' not in order_cols:
+            cursor.execute("ALTER TABLE orders ADD COLUMN promotion_id INTEGER")
+        if 'promotion_code' not in order_cols:
+            cursor.execute("ALTER TABLE orders ADD COLUMN promotion_code TEXT")
+        if 'promotion_name' not in order_cols:
+            cursor.execute("ALTER TABLE orders ADD COLUMN promotion_name TEXT")
+        if 'promotion_discount' not in order_cols:
+            cursor.execute("ALTER TABLE orders ADD COLUMN promotion_discount REAL DEFAULT 0")
+        if 'cancelled_at' not in order_cols:
+            cursor.execute("ALTER TABLE orders ADD COLUMN cancelled_at TEXT")
+        if 'cancelled_reason' not in order_cols:
+            cursor.execute("ALTER TABLE orders ADD COLUMN cancelled_reason TEXT")
+
+        # 4. Add columns to order_items
+        cursor.execute("PRAGMA table_info(order_items)")
+        oi_cols = [r['name'] for r in cursor.fetchall()]
+        if 'conversion_rate' not in oi_cols:
+            cursor.execute("ALTER TABLE order_items ADD COLUMN conversion_rate REAL DEFAULT 1")
+        if 'base_quantity' not in oi_cols:
+            cursor.execute("ALTER TABLE order_items ADD COLUMN base_quantity REAL")
+            cursor.execute("UPDATE order_items SET base_quantity = quantity WHERE base_quantity IS NULL")
+
+        # 5. Add columns to purchase_items
+        cursor.execute("PRAGMA table_info(purchase_items)")
+        pi_cols = [r['name'] for r in cursor.fetchall()]
+        if 'conversion_rate' not in pi_cols:
+            cursor.execute("ALTER TABLE purchase_items ADD COLUMN conversion_rate REAL DEFAULT 1")
+        if 'base_quantity' not in pi_cols:
+            cursor.execute("ALTER TABLE purchase_items ADD COLUMN base_quantity REAL")
+            cursor.execute("UPDATE purchase_items SET base_quantity = quantity WHERE base_quantity IS NULL")
+
+        # 6. Add columns to return_items
+        cursor.execute("PRAGMA table_info(return_items)")
+        ri_cols = [r['name'] for r in cursor.fetchall()]
+        if 'conversion_rate' not in ri_cols:
+            cursor.execute("ALTER TABLE return_items ADD COLUMN conversion_rate REAL DEFAULT 1")
+        if 'base_quantity' not in ri_cols:
+            cursor.execute("ALTER TABLE return_items ADD COLUMN base_quantity REAL")
+            cursor.execute("UPDATE return_items SET base_quantity = quantity WHERE base_quantity IS NULL")
+
+        # 7. Migrate existing products to product_units
+        cursor.execute("SELECT id, code, barcode, name, unit, cost_price, sale_price FROM products")
+        existing_prods = cursor.fetchall()
+        for ep in existing_prods:
+            base_unit_name = (ep['unit'] or 'Cái').strip()
+            cursor.execute("SELECT id FROM product_units WHERE product_id = ? AND unit_name = ?", (ep['id'], base_unit_name))
+            if not cursor.fetchone():
+                cursor.execute("""
+                    INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, is_default_sale, created_at)
+                    VALUES (?, ?, 1.0, ?, ?, ?, 1, 1, ?)
+                """, (ep['id'], base_unit_name, ep['sale_price'], ep['cost_price'], ep['barcode'], now_str))
+
+        # 8. Seed sample packaging units for SP0002 (Coca Lon -> Lốc 6 -> Thùng 24)
+        cursor.execute("SELECT id FROM products WHERE code = 'SP0002'")
+        sp2 = cursor.fetchone()
+        if sp2:
+            p2_id = sp2['id']
+            # Lốc 6
+            cursor.execute("SELECT id FROM product_units WHERE product_id = ? AND unit_name = 'Lốc'", (p2_id,))
+            if not cursor.fetchone():
+                cursor.execute("""
+                    INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, is_default_sale, created_at)
+                    VALUES (?, 'Lốc', 6.0, 70000, 51000, '893500170002-L', 0, 0, ?)
+                """, (p2_id, now_str))
+            # Thùng 24
+            cursor.execute("SELECT id FROM product_units WHERE product_id = ? AND unit_name = 'Thùng'", (p2_id,))
+            if not cursor.fetchone():
+                cursor.execute("""
+                    INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, is_default_sale, created_at)
+                    VALUES (?, 'Thùng', 24.0, 270000, 204000, '893500170002-T', 0, 0, ?)
+                """, (p2_id, now_str))
+
+        # 9. Seed sample promotions if empty
+        cursor.execute("SELECT COUNT(*) FROM promotions")
+        if cursor.fetchone()[0] == 0:
+            sample_promos = [
+                ('KM0001', 'Khuyến mãi Khai trương - Giảm 5% đơn từ 200k', '2026-01-01 00:00:00', '2027-12-31 23:59:59', 1, 'order', None, None, 'percent', 5, 200000, 'all', now_str, now_str),
+                ('KM0002', 'Giảm 20.000đ khi mua Nước giải khát từ 150k', '2026-01-01 00:00:00', '2027-12-31 23:59:59', 1, 'category', None, 'Nước giải khát', 'fixed', 20000, 150000, 'all', now_str, now_str)
+            ]
+            cursor.executemany("""
+                INSERT INTO promotions (code, name, start_date, end_date, is_active, scope, target_id, target_category, discount_type, discount_value, min_order_amount, customer_group, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, sample_promos)
+
+        cursor.execute("INSERT INTO schema_migrations (version, name, applied_at) VALUES (3, 'v3_units_promotions_orders', ?)", (now_str,))
+        conn.commit()
+        print("[Migration] Applied Migration v3: v3_units_promotions_orders successfully!")
 
 def migrate_columns(conn):
     """Backward compatibility stub redirecting to apply_migrations."""

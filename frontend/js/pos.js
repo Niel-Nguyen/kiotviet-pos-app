@@ -1,7 +1,13 @@
 /**
- * POS (Point of Sale) & Cashier Checkout Module
- * Accurate cash drawer calculation, VAT taxation, packaging sub-units,
- * customer price matching, and dynamic store receipt printing.
+ * POS (Point of Sale) & Cashier Checkout Module for KiotPro
+ * Features:
+ * - Multi-level packaging unit selection per line item (Lon -> Lốc -> Thùng)
+ * - Decimal quantity support with real-time base stock validation
+ * - Dynamic promotion verification & non-stackable discount calculation
+ * - Customer-specific pricing compatible with packaging unit conversions
+ * - Dedicated order notes (without overwriting with debt messages)
+ * - Support for Completed sales and Pending orders (Đơn đang đặt)
+ * - Thermal 80mm invoice printing with cashier identity, promotions & notes
  */
 
 const POS = {
@@ -16,6 +22,8 @@ const POS = {
   customerPaid: 0,
   paymentMethod: 'cash',
   storeSettings: {},
+  applicablePromotions: [],
+  selectedPromotion: null,
 
   async init() {
     await this.loadStoreSettings();
@@ -86,20 +94,28 @@ const POS = {
       }
     }
 
-    // Refresh cart item prices according to selected customer
+    // Refresh cart item prices according to selected customer & current unit
     this.cart.forEach(item => {
-      if (this.customerPricesMap[item.product_id] !== undefined) {
-        item.sale_price = this.customerPricesMap[item.product_id];
+      const prod = this.products.find(p => p.id === item.product_id);
+      const hasCustom = this.customerPricesMap[item.product_id] !== undefined;
+      if (hasCustom) {
+        item.sale_price = Math.round(this.customerPricesMap[item.product_id] * item.conversion_rate);
         item.is_custom_price = true;
       } else {
-        item.sale_price = item.default_sale_price;
+        const u = item.available_units.find(x => x.unit_name === item.unit);
+        if (u && u.sale_price && u.sale_price > 0) {
+          item.sale_price = u.sale_price;
+        } else if (prod) {
+          item.sale_price = Math.round(prod.sale_price * item.conversion_rate);
+        }
         item.is_custom_price = false;
       }
-      item.subtotal = item.quantity * item.sale_price;
+      item.subtotal = Math.round(item.quantity * item.sale_price);
     });
 
     this.renderProducts();
     this.renderCart();
+    this.checkApplicablePromotions();
   },
 
   renderCustomerSelect() {
@@ -141,7 +157,8 @@ const POS = {
       filtered = filtered.filter(p => 
         p.name.toLowerCase().includes(query) || 
         p.code.toLowerCase().includes(query) || 
-        (p.barcode && p.barcode.toLowerCase().includes(query))
+        (p.barcode && p.barcode.toLowerCase().includes(query)) ||
+        (p.units && p.units.some(u => u.barcode && u.barcode.toLowerCase().includes(query)))
       );
     }
 
@@ -154,20 +171,29 @@ const POS = {
       const hasCustom = this.customerPricesMap[p.id] !== undefined;
       const effectivePrice = hasCustom ? this.customerPricesMap[p.id] : p.sale_price;
       const isOutOfStock = p.stock <= 0;
+      const breakdownText = p.stock_breakdown || `${p.stock} ${p.unit}`;
 
       return `
         <div class="pos-product-card ${isOutOfStock ? 'product-card-out' : ''}" onclick="POS.addToCart(${p.id})">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
             <span class="product-code-tag">${p.code}</span>
-            <span class="product-stock-tag ${p.stock <= p.min_stock ? 'badge-tag badge-red' : ''}">
-              Tồn: ${p.stock} ${p.unit}
+            <span class="product-stock-tag ${p.stock <= p.min_stock ? 'badge-tag badge-red' : ''}" title="Tồn cơ sở: ${p.stock} ${p.unit}">
+              Tồn: ${breakdownText}
             </span>
           </div>
           <div class="product-name-title" title="${p.name}">${p.name}</div>
-          ${p.sub_unit ? `<small style="color: #64748b; font-size: 0.72rem;">(1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit})</small>` : ''}
+          ${p.units && p.units.length > 1 ? `
+            <div style="display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px;">
+              ${p.units.map(u => `
+                <span class="unit-tag-pill" style="font-size: 0.7rem; padding: 1px 5px;" onclick="event.stopPropagation(); POS.addToCart(${p.id}, '${u.unit_name}')">
+                  +1 ${u.unit_name}
+                </span>
+              `).join('')}
+            </div>
+          ` : ''}
           <div class="product-price-row">
             <div>
-              <div class="product-price">${App.formatMoney(effectivePrice)}</div>
+              <div class="product-price">${App.formatMoney(effectivePrice)} / ${p.unit}</div>
               ${hasCustom ? `<span class="badge-custom-price"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg> Giá riêng</span> <span style="text-decoration: line-through; font-size: 0.72rem; color: #94a3b8;">${App.formatMoney(p.sale_price)}</span>` : ''}
             </div>
           </div>
@@ -176,32 +202,56 @@ const POS = {
     }).join('');
   },
 
-  addToCart(productId) {
+  addToCart(productId, unitName = null) {
     const prod = this.products.find(p => p.id === productId);
     if (!prod) return;
 
-    const existing = this.cart.find(item => item.product_id === productId);
-    const allowNegative = (this.storeSettings.allow_negative_stock === 'true');
-    const targetQty = (existing ? existing.quantity + 1 : 1);
+    const units = (prod.units && prod.units.length > 0) ? prod.units : [
+      { unit_name: prod.unit, conversion_rate: 1.0, sale_price: prod.sale_price, is_base: 1 }
+    ];
 
-    if (!allowNegative && prod.stock < targetQty) {
+    let chosenUnit = units.find(u => u.is_default_sale) || units.find(u => u.is_base) || units[0];
+    if (unitName) {
+      const match = units.find(u => u.unit_name === unitName);
+      if (match) chosenUnit = match;
+    }
+
+    const existing = this.cart.find(item => item.product_id === productId && item.unit === chosenUnit.unit_name);
+    const allowNegative = (this.storeSettings.allow_negative_stock === 'true');
+    const addQty = 1;
+    const targetQty = (existing ? existing.quantity + addQty : addQty);
+    const targetBaseQty = targetQty * chosenUnit.conversion_rate;
+
+    const otherItemsBaseQty = this.cart
+      .filter(i => i.product_id === productId && (!existing || i !== existing))
+      .reduce((sum, i) => sum + (i.quantity * i.conversion_rate), 0);
+
+    if (!allowNegative && prod.stock < (otherItemsBaseQty + targetBaseQty)) {
       App.toast(`Sản phẩm "${prod.name}" chỉ còn tồn ${prod.stock} ${prod.unit}, không đủ để bán thêm!`, 'warning');
       return;
     }
 
     if (existing) {
       existing.quantity += 1;
-      existing.subtotal = existing.quantity * existing.sale_price;
+      existing.subtotal = Math.round(existing.quantity * existing.sale_price);
     } else {
+      let effectivePrice = chosenUnit.sale_price;
       const hasCustom = this.customerPricesMap[prod.id] !== undefined;
-      const effectivePrice = hasCustom ? this.customerPricesMap[prod.id] : prod.sale_price;
+      if (hasCustom) {
+        effectivePrice = Math.round(this.customerPricesMap[prod.id] * chosenUnit.conversion_rate);
+      } else if (!effectivePrice || effectivePrice <= 0) {
+        effectivePrice = Math.round(prod.sale_price * chosenUnit.conversion_rate);
+      }
 
       this.cart.push({
         product_id: prod.id,
         code: prod.code,
         name: prod.name,
-        unit: prod.unit,
-        default_sale_price: prod.sale_price,
+        category: prod.category,
+        unit: chosenUnit.unit_name,
+        conversion_rate: chosenUnit.conversion_rate,
+        available_units: units,
+        default_sale_price: Math.round(prod.sale_price * chosenUnit.conversion_rate),
         sale_price: effectivePrice,
         is_custom_price: hasCustom,
         save_as_custom_price: false,
@@ -211,67 +261,111 @@ const POS = {
     }
 
     this.renderCart();
+    this.checkApplicablePromotions();
   },
 
-  updateQuantity(productId, delta) {
-    const item = this.cart.find(i => i.product_id === productId);
+  changeItemUnit(cartIndex, newUnitName) {
+    const item = this.cart[cartIndex];
     if (!item) return;
 
-    const prod = this.products.find(p => p.id === productId);
-    const allowNegative = (this.storeSettings.allow_negative_stock === 'true');
-    const newQty = item.quantity + delta;
+    const prod = this.products.find(p => p.id === item.product_id);
+    const unit = item.available_units.find(u => u.unit_name === newUnitName);
+    if (!unit) return;
 
-    if (delta > 0 && prod && !allowNegative && prod.stock < newQty) {
-      App.toast(`Không đủ tồn kho để bán ${newQty} ${prod.unit} (Hiện còn tồn: ${prod.stock})`, 'warning');
+    item.unit = unit.unit_name;
+    item.conversion_rate = unit.conversion_rate;
+
+    const hasCustom = this.customerPricesMap[item.product_id] !== undefined;
+    if (hasCustom) {
+      item.sale_price = Math.round(this.customerPricesMap[item.product_id] * unit.conversion_rate);
+    } else if (unit.sale_price && unit.sale_price > 0) {
+      item.sale_price = unit.sale_price;
+    } else if (prod) {
+      item.sale_price = Math.round(prod.sale_price * unit.conversion_rate);
+    }
+    item.default_sale_price = prod ? Math.round(prod.sale_price * unit.conversion_rate) : item.sale_price;
+    item.subtotal = Math.round(item.quantity * item.sale_price);
+
+    this.renderCart();
+    this.checkApplicablePromotions();
+  },
+
+  updateQuantity(cartIndex, delta) {
+    const item = this.cart[cartIndex];
+    if (!item) return;
+
+    const prod = this.products.find(p => p.id === item.product_id);
+    const allowNegative = (this.storeSettings.allow_negative_stock === 'true');
+    const newQty = Math.max(0.001, item.quantity + delta);
+
+    const otherItemsBaseQty = this.cart
+      .filter((it, idx) => it.product_id === item.product_id && idx !== cartIndex)
+      .reduce((sum, it) => sum + (it.quantity * it.conversion_rate), 0);
+
+    if (delta > 0 && prod && !allowNegative && prod.stock < (otherItemsBaseQty + (newQty * item.conversion_rate))) {
+      App.toast(`Không đủ tồn kho để bán ${newQty} ${item.unit} (Hiện còn tồn: ${prod.stock} ${prod.unit})`, 'warning');
       return;
     }
 
     item.quantity = newQty;
-    if (item.quantity <= 0) {
-      this.removeFromCart(productId);
+    if (item.quantity <= 0.0001) {
+      this.removeFromCart(cartIndex);
       return;
     }
-    item.subtotal = item.quantity * item.sale_price;
+    item.subtotal = Math.round(item.quantity * item.sale_price);
     this.renderCart();
+    this.checkApplicablePromotions();
   },
 
-  setQuantity(productId, value) {
-    const qty = parseFloat(value) || 1;
-    const item = this.cart.find(i => i.product_id === productId);
+  setQuantity(cartIndex, value) {
+    const qty = parseFloat(value);
+    if (isNaN(qty) || qty <= 0) return;
+    const item = this.cart[cartIndex];
     if (!item) return;
 
-    const prod = this.products.find(p => p.id === productId);
+    const prod = this.products.find(p => p.id === item.product_id);
     const allowNegative = (this.storeSettings.allow_negative_stock === 'true');
-    if (prod && !allowNegative && prod.stock < qty) {
-      App.toast(`Không đủ tồn kho để bán ${qty} ${prod.unit} (Hiện còn tồn: ${prod.stock})`, 'warning');
-      item.quantity = prod.stock > 0 ? prod.stock : 1;
+    const otherItemsBaseQty = this.cart
+      .filter((it, idx) => it.product_id === item.product_id && idx !== cartIndex)
+      .reduce((sum, it) => sum + (it.quantity * it.conversion_rate), 0);
+
+    if (prod && !allowNegative && prod.stock < (otherItemsBaseQty + (qty * item.conversion_rate))) {
+      App.toast(`Không đủ tồn kho để bán ${qty} ${item.unit} (Hiện còn tồn: ${prod.stock} ${prod.unit})`, 'warning');
+      const maxQty = Math.max(0, (prod.stock - otherItemsBaseQty) / item.conversion_rate);
+      item.quantity = maxQty > 0 ? Math.floor(maxQty * 100) / 100 : 1;
     } else {
-      item.quantity = Math.max(1, qty);
+      item.quantity = qty;
     }
 
-    item.subtotal = item.quantity * item.sale_price;
+    item.subtotal = Math.round(item.quantity * item.sale_price);
     this.renderCart();
+    this.checkApplicablePromotions();
   },
 
-  editItemPrice(productId, newPrice, saveAsCustom = false) {
-    const item = this.cart.find(i => i.product_id === productId);
+  editItemPrice(cartIndex, newPrice, saveAsCustom = false) {
+    const item = this.cart[cartIndex];
     if (!item) return;
     item.sale_price = Math.max(0, parseFloat(newPrice) || 0);
-    item.subtotal = item.quantity * item.sale_price;
+    item.subtotal = Math.round(item.quantity * item.sale_price);
     item.is_custom_price = (item.sale_price !== item.default_sale_price);
     item.save_as_custom_price = saveAsCustom;
     this.renderCart();
+    this.checkApplicablePromotions();
   },
 
-  removeFromCart(productId) {
-    this.cart = this.cart.filter(i => i.product_id !== productId);
+  removeFromCart(cartIndex) {
+    this.cart.splice(cartIndex, 1);
     this.renderCart();
+    this.checkApplicablePromotions();
   },
 
   clearCart() {
     this.cart = [];
     this.discountAmount = 0;
     this.customerPaid = 0;
+    this.applicablePromotions = [];
+    this.selectedPromotion = null;
+
     const paidInput = document.getElementById('pos-paid-input');
     if (paidInput) {
       paidInput.value = 0;
@@ -279,6 +373,10 @@ const POS = {
     }
     const discInput = document.getElementById('pos-discount-input');
     if (discInput) discInput.value = 0;
+    const notesInput = document.getElementById('pos-order-notes');
+    if (notesInput) notesInput.value = '';
+
+    this.renderPromotionsSelect();
     this.renderCart();
   },
 
@@ -305,25 +403,36 @@ const POS = {
       return;
     }
 
-    list.innerHTML = this.cart.map(item => `
+    list.innerHTML = this.cart.map((item, idx) => `
       <div class="pos-cart-item">
         <div class="cart-item-header">
           <div>
             <span class="cart-item-name">${item.name}</span>
             ${item.is_custom_price ? '<span class="badge-custom-price" style="margin-left: 6px;"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg> Giá riêng</span>' : ''}
           </div>
-          <button class="cart-item-delete" onclick="POS.removeFromCart(${item.product_id})" title="Xóa">✕</button>
+          <button class="cart-item-delete" onclick="POS.removeFromCart(${idx})" title="Xóa">✕</button>
         </div>
         <div class="cart-item-controls">
           <div class="cart-qty-group">
-            <button class="qty-btn" onclick="POS.updateQuantity(${item.product_id}, -1)">-</button>
-            <input type="number" class="qty-input" value="${item.quantity}" min="1" onchange="POS.setQuantity(${item.product_id}, this.value)">
-            <button class="qty-btn" onclick="POS.updateQuantity(${item.product_id}, 1)">+</button>
+            <button class="qty-btn" onclick="POS.updateQuantity(${idx}, -1)">-</button>
+            <input type="number" class="qty-input" value="${item.quantity}" step="any" min="0.001" onchange="POS.setQuantity(${idx}, this.value)" style="width: 58px;">
+            <button class="qty-btn" onclick="POS.updateQuantity(${idx}, 1)">+</button>
           </div>
+
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <select class="cart-unit-select" onchange="POS.changeItemUnit(${idx}, this.value)">
+              ${item.available_units.map(u => `
+                <option value="${u.unit_name}" ${u.unit_name === item.unit ? 'selected' : ''}>
+                  ${u.unit_name} (x${u.conversion_rate})
+                </option>
+              `).join('')}
+            </select>
+          </div>
+
           <div class="cart-item-pricing">
             <div class="cart-item-subtotal">${App.formatMoney(item.subtotal)}</div>
             <div class="cart-item-unit-price">
-              <span style="cursor: pointer; text-decoration: underline dotted; display: inline-flex; align-items: center; gap: 3px;" onclick="POS.promptEditPrice(${item.product_id})" title="Nhấp để sửa giá bán">
+              <span style="cursor: pointer; text-decoration: underline dotted; display: inline-flex; align-items: center; gap: 3px;" onclick="POS.promptEditPrice(${idx})" title="Nhấp để sửa giá bán">
                 ${App.formatMoney(item.sale_price)} / ${item.unit}
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
               </span>
@@ -336,11 +445,11 @@ const POS = {
     this.updateTotals();
   },
 
-  promptEditPrice(productId) {
-    const item = this.cart.find(i => i.product_id === productId);
+  promptEditPrice(cartIndex) {
+    const item = this.cart[cartIndex];
     if (!item) return;
 
-    const newPriceStr = prompt(`Chỉnh sửa đơn giá cho "${item.name}" (Giá niêm yết: ${App.formatMoney(item.default_sale_price)}):`, item.sale_price);
+    const newPriceStr = prompt(`Chỉnh sửa đơn giá cho "${item.name}" (Đơn vị: ${item.unit}, Giá niêm yết: ${App.formatMoney(item.default_sale_price)}):`, item.sale_price);
     if (newPriceStr === null) return;
     const newPrice = parseFloat(newPriceStr);
     if (isNaN(newPrice) || newPrice < 0) {
@@ -353,27 +462,114 @@ const POS = {
       saveAsCustom = confirm(`Bạn có muốn LƯU giá ${App.formatMoney(newPrice)} làm GIÁ RIÊNG cố định cho khách "${this.selectedCustomer.name}" không?`);
     }
 
-    this.editItemPrice(productId, newPrice, saveAsCustom);
+    this.editItemPrice(cartIndex, newPrice, saveAsCustom);
     if (saveAsCustom) {
       App.toast(`Đã cài đặt giá riêng cho khách ${this.selectedCustomer.name}!`, 'success');
     }
   },
 
+  async checkApplicablePromotions() {
+    if (this.cart.length === 0) {
+      this.applicablePromotions = [];
+      this.selectedPromotion = null;
+      this.renderPromotionsSelect();
+      this.updateTotals();
+      return;
+    }
+
+    const grossSubtotal = this.cart.reduce((sum, item) => sum + item.subtotal, 0);
+    try {
+      const applicable = await API.checkPromotions({
+        items: this.cart.map(i => ({
+          product_id: i.product_id,
+          category: i.category,
+          subtotal: i.subtotal
+        })),
+        customer_id: this.selectedCustomer ? this.selectedCustomer.id : 1,
+        total_amount: grossSubtotal
+      });
+      this.applicablePromotions = applicable || [];
+
+      if (this.selectedPromotion) {
+        const match = this.applicablePromotions.find(p => p.id === this.selectedPromotion.id);
+        if (match) this.selectedPromotion = match;
+        else this.selectedPromotion = this.applicablePromotions[0] || null;
+      } else if (this.applicablePromotions.length > 0) {
+        this.selectedPromotion = this.applicablePromotions[0];
+      }
+    } catch (e) {
+      console.warn("Could not check promotions", e);
+      this.applicablePromotions = [];
+    }
+
+    this.renderPromotionsSelect();
+    this.updateTotals();
+  },
+
+  renderPromotionsSelect() {
+    const sel = document.getElementById('pos-promotion-select');
+    if (!sel) return;
+
+    if (!this.applicablePromotions || this.applicablePromotions.length === 0) {
+      sel.innerHTML = '<option value="">-- Không có KM hợp lệ --</option>';
+      sel.disabled = true;
+      return;
+    }
+
+    sel.disabled = false;
+    sel.innerHTML = '<option value="">-- Không áp dụng --</option>' + 
+      this.applicablePromotions.map(p => `
+        <option value="${p.id}" ${this.selectedPromotion && this.selectedPromotion.id === p.id ? 'selected' : ''}>
+          ${p.name} (-${App.formatMoney(p.calculated_discount)})
+        </option>
+      `).join('');
+  },
+
+  onPromotionChange() {
+    const sel = document.getElementById('pos-promotion-select');
+    if (!sel) return;
+    const promoId = parseInt(sel.value);
+    if (!promoId) {
+      this.selectedPromotion = null;
+    } else {
+      this.selectedPromotion = this.applicablePromotions.find(p => p.id === promoId) || null;
+    }
+    this.updateTotals();
+  },
+
   updateTotals() {
     const subtotal = this.cart.reduce((sum, item) => sum + item.subtotal, 0);
-    const discountInput = document.getElementById('pos-discount-input');
-    const discountVal = discountInput ? (parseFloat(discountInput.value) || 0) : 0;
-    this.discountAmount = discountVal;
+    const subtotalElem = document.getElementById('pos-subtotal');
+    if (subtotalElem) subtotalElem.textContent = App.formatMoney(subtotal);
 
-    const netRevenue = Math.max(0, subtotal - this.discountAmount);
-    
-    // VAT calculation
+    const discountInput = document.getElementById('pos-discount-input');
+    this.discountAmount = discountInput ? (parseFloat(discountInput.value) || 0) : 0;
+
+    const promoDiscountRow = document.getElementById('pos-promo-discount-row');
+    const promoDiscountValElem = document.getElementById('pos-promo-discount-val');
+    const promoDiscount = this.selectedPromotion ? this.selectedPromotion.calculated_discount : 0;
+
+    if (promoDiscountRow && promoDiscountValElem) {
+      if (promoDiscount > 0) {
+        promoDiscountRow.style.display = 'flex';
+        promoDiscountValElem.textContent = `-${App.formatMoney(promoDiscount)}`;
+      } else {
+        promoDiscountRow.style.display = 'none';
+      }
+    }
+
+    const netRevenue = Math.max(0, subtotal - this.discountAmount - promoDiscount);
+
     const vatSelect = document.getElementById('pos-vat-select');
     this.vatPercent = vatSelect ? (parseFloat(vatSelect.value) || 0) : 0;
     const vatAmount = Math.round(netRevenue * (this.vatPercent / 100));
-    const finalAmount = netRevenue + vatAmount;
+    const vatElem = document.getElementById('pos-vat-amount');
+    if (vatElem) vatElem.textContent = App.formatMoney(vatAmount);
 
-    // Customer Paid input handling
+    const finalAmount = netRevenue + vatAmount;
+    const finalElem = document.getElementById('pos-final-amount');
+    if (finalElem) finalElem.textContent = App.formatMoney(finalAmount);
+
     const paidInput = document.getElementById('pos-paid-input');
     if (paidInput && (!paidInput.dataset.manual || paidInput.dataset.manual === 'false')) {
       paidInput.value = finalAmount;
@@ -382,160 +578,144 @@ const POS = {
       this.customerPaid = parseFloat(paidInput.value) || 0;
     }
 
-    // Precise Accounting:
-    // Change returned (thối lại) vs Debt (ghi nợ)
-    const changeAmount = Math.max(0, this.customerPaid - finalAmount);
-    const debtAmount = Math.max(0, finalAmount - this.customerPaid);
-
-    // Elements
-    const subtotalElem = document.getElementById('pos-subtotal');
-    const vatAmountElem = document.getElementById('pos-vat-amount');
-    const finalElem = document.getElementById('pos-final-amount');
     const balanceLabel = document.getElementById('pos-balance-label');
-    const balanceElem = document.getElementById('pos-balance-amount');
-
-    if (subtotalElem) subtotalElem.textContent = App.formatMoney(subtotal);
-    if (vatAmountElem) vatAmountElem.textContent = App.formatMoney(vatAmount);
-    if (finalElem) finalElem.textContent = App.formatMoney(finalAmount);
-
-    if (balanceLabel && balanceElem) {
-      if (this.customerPaid >= finalAmount) {
+    const balanceAmount = document.getElementById('pos-balance-amount');
+    if (balanceLabel && balanceAmount) {
+      const diff = this.customerPaid - finalAmount;
+      if (diff >= 0) {
         balanceLabel.textContent = 'Tiền thừa trả khách:';
-        balanceElem.textContent = App.formatMoney(changeAmount);
-        balanceElem.style.color = '#10b981';
+        balanceAmount.style.color = 'var(--color-success)';
+        balanceAmount.textContent = App.formatMoney(diff);
       } else {
-        balanceLabel.textContent = 'Ghi nợ khách hàng:';
-        balanceElem.textContent = App.formatMoney(debtAmount);
-        balanceElem.style.color = '#ef4444';
+        balanceLabel.textContent = 'Ghi nợ vào tài khoản:';
+        balanceAmount.style.color = 'var(--color-danger-text)';
+        balanceAmount.textContent = App.formatMoney(Math.abs(diff));
       }
     }
   },
 
-  setupEventListeners() {
-    const searchInput = document.getElementById('pos-search-input');
-    if (searchInput) {
-      searchInput.addEventListener('input', () => this.renderProducts());
-      searchInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          const val = searchInput.value.trim().toLowerCase();
-          const match = this.products.find(p => 
-            p.barcode === val || p.code.toLowerCase() === val
-          );
-          if (match) {
-            this.addToCart(match.id);
-            searchInput.value = '';
-            this.renderProducts();
-          }
-        }
-      });
-    }
-
-    const custSelect = document.getElementById('pos-customer-select');
-    if (custSelect) {
-      custSelect.addEventListener('change', (e) => this.selectCustomer(e.target.value));
-    }
-
-    const discInput = document.getElementById('pos-discount-input');
-    if (discInput) {
-      discInput.addEventListener('input', () => this.updateTotals());
-    }
-
-    const vatSelect = document.getElementById('pos-vat-select');
-    if (vatSelect) {
-      vatSelect.addEventListener('change', () => this.updateTotals());
-    }
-
-    const paidInput = document.getElementById('pos-paid-input');
-    if (paidInput) {
-      paidInput.addEventListener('input', () => {
-        paidInput.dataset.manual = 'true';
-        this.updateTotals();
-      });
-    }
-
-    const methodBtns = document.querySelectorAll('.payment-method-btn');
-    methodBtns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        methodBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        this.paymentMethod = btn.dataset.method;
-        if (this.paymentMethod === 'debt') {
-          if (paidInput) {
-            paidInput.value = 0;
-            paidInput.dataset.manual = 'true';
-            this.updateTotals();
-          }
-        }
-      });
-    });
-  },
-
-  async checkout() {
+  async checkout(isPending = false) {
     if (this.cart.length === 0) {
       App.toast('Giỏ hàng đang trống!', 'warning');
       return;
     }
 
     const subtotal = this.cart.reduce((sum, item) => sum + item.subtotal, 0);
-    const netRevenue = Math.max(0, subtotal - this.discountAmount);
+    const promoDiscount = this.selectedPromotion ? this.selectedPromotion.calculated_discount : 0;
+    const netRevenue = Math.max(0, subtotal - this.discountAmount - promoDiscount);
     const vatAmount = Math.round(netRevenue * (this.vatPercent / 100));
     const finalAmount = netRevenue + vatAmount;
 
-    const paid = this.customerPaid;
-    const debt = Math.max(0, finalAmount - paid);
+    const paid = isPending ? 0 : this.customerPaid;
+    const debt = isPending ? 0 : Math.max(0, finalAmount - paid);
 
-    if (debt > 0 && (!this.selectedCustomer || this.selectedCustomer.code === 'KH0001')) {
-      App.toast('Khách lẻ không thể ghi nợ! Vui lòng chọn hoặc thêm khách hàng để ghi nợ.', 'error');
+    if (!isPending && debt > 0 && (!this.selectedCustomer || this.selectedCustomer.code === 'KH0001')) {
+      App.toast('Khách lẻ không thể ghi nợ. Vui lòng chọn khách hàng cụ thể hoặc thanh toán đủ.', 'error');
       return;
     }
 
+    const notes = (document.getElementById('pos-order-notes')?.value || '').trim();
+
     const orderData = {
-      customer_id: this.selectedCustomer ? this.selectedCustomer.id : null,
+      customer_id: this.selectedCustomer ? this.selectedCustomer.id : 1,
       customer_name: this.selectedCustomer ? this.selectedCustomer.name : 'Khách lẻ',
+      status: isPending ? 'pending' : 'completed',
       items: this.cart.map(i => ({
         product_id: i.product_id,
+        unit: i.unit,
         quantity: i.quantity,
         sale_price: i.sale_price,
-        is_custom_price: i.is_custom_price,
+        is_custom_price: i.is_custom_price ? 1 : 0,
         save_as_custom_price: i.save_as_custom_price
       })),
       discount: this.discountAmount,
+      promotion_id: this.selectedPromotion ? this.selectedPromotion.id : null,
       vat_percent: this.vatPercent,
       paid_amount: paid,
       payment_method: this.paymentMethod,
-      notes: debt > 0 ? `Khách nợ ${App.formatMoney(debt)}` : ''
+      notes: notes
     };
 
     try {
       const res = await API.createOrder(orderData);
-      App.toast(`Tạo đơn hàng ${res.code} thành công!`, 'success');
-
-      // Show receipt modal with dynamic store configuration
-      this.showReceiptModal({
-        code: res.code,
-        customer_name: orderData.customer_name,
-        created_at: new Date().toLocaleString('vi-VN'),
-        items: this.cart,
-        subtotal: subtotal,
-        discount: this.discountAmount,
-        net_revenue: netRevenue,
-        vat_percent: this.vatPercent,
-        vat_amount: vatAmount,
-        final_amount: finalAmount,
-        customer_paid: paid,
-        actual_paid: res.paid_amount,
-        change: res.change_amount,
-        debt: res.debt_amount,
-        payment_method: this.paymentMethod
-      });
+      if (isPending) {
+        App.toast(`Đã lưu đơn đặt hàng ${res.code} (Pending) thành công!`, 'success');
+      } else {
+        App.toast(`Tạo đơn hàng ${res.code} thành công!`, 'success');
+        this.showReceiptModal({
+          code: res.code,
+          customer_name: orderData.customer_name,
+          created_at: new Date().toLocaleString('vi-VN'),
+          items: this.cart,
+          subtotal: subtotal,
+          discount: this.discountAmount,
+          promotion_name: this.selectedPromotion ? this.selectedPromotion.name : null,
+          promotion_discount: promoDiscount,
+          net_revenue: netRevenue,
+          vat_percent: this.vatPercent,
+          vat_amount: vatAmount,
+          final_amount: finalAmount,
+          customer_paid: paid,
+          actual_paid: res.paid_amount,
+          change: res.change_amount,
+          debt: res.debt_amount,
+          payment_method: this.paymentMethod,
+          notes: notes
+        });
+      }
 
       this.clearCart();
       await this.loadProducts();
       await this.loadCustomers();
-      App.refreshCurrentView();
+      if (window.App && typeof window.App.refreshDashboardStats === 'function') {
+        window.App.refreshDashboardStats();
+      }
     } catch (err) {
       App.toast(`Lỗi thanh toán: ${err.message}`, 'error');
     }
+  },
+
+  loadFromOrder(order) {
+    if (!order || !order.items || order.items.length === 0) return;
+    this.clearCart();
+
+    if (order.customer_id) {
+      const custSel = document.getElementById('pos-customer-select');
+      if (custSel) custSel.value = order.customer_id;
+      this.selectCustomer(order.customer_id);
+    }
+
+    order.items.forEach(it => {
+      const prod = this.products.find(p => p.id === it.product_id);
+      const units = (prod && prod.units) ? prod.units : [
+        { unit_name: it.unit, conversion_rate: it.conversion_rate || 1.0, sale_price: it.sale_price, is_base: 1 }
+      ];
+
+      this.cart.push({
+        product_id: it.product_id,
+        code: it.product_code || (prod ? prod.code : ''),
+        name: it.product_name || (prod ? prod.name : ''),
+        category: prod ? prod.category : 'Chung',
+        unit: it.unit,
+        conversion_rate: it.conversion_rate || 1.0,
+        available_units: units,
+        default_sale_price: prod ? Math.round(prod.sale_price * (it.conversion_rate || 1.0)) : it.sale_price,
+        sale_price: it.sale_price,
+        is_custom_price: it.is_custom_price || false,
+        save_as_custom_price: false,
+        quantity: it.quantity,
+        subtotal: it.subtotal || Math.round(it.quantity * it.sale_price)
+      });
+    });
+
+    const notesInput = document.getElementById('pos-order-notes');
+    if (notesInput && order.notes) {
+      notesInput.value = order.notes;
+    }
+
+    this.renderCart();
+    this.checkApplicablePromotions();
+    App.toast(`Đã nạp ${this.cart.length} sản phẩm từ hóa đơn ${order.code} vào POS!`, 'info');
   },
 
   showReceiptModal(order) {
@@ -560,6 +740,7 @@ const POS = {
           <div style="font-size: 11px;">Ngày: ${order.created_at}</div>
           <div style="font-size: 11px;">Thu ngân: <strong>${(App.currentUser && App.currentUser.full_name) || 'Quầy thu ngân'}</strong></div>
           <div style="font-size: 11px;">Khách hàng: <strong>${order.customer_name}</strong></div>
+          ${order.notes ? `<div style="font-size: 11px; font-style: italic; margin-top: 2px;">Ghi chú: ${order.notes}</div>` : ''}
         </div>
 
         <div class="divider"></div>
@@ -568,6 +749,7 @@ const POS = {
           <thead>
             <tr style="border-bottom: 1px dashed #000;">
               <th style="text-align: left; padding: 4px 0;">Mặt hàng</th>
+              <th style="text-align: center;">ĐVT</th>
               <th style="text-align: center;">SL</th>
               <th style="text-align: right;">Đ.Giá</th>
               <th style="text-align: right;">T.Tiền</th>
@@ -578,8 +760,9 @@ const POS = {
               <tr>
                 <td style="padding: 3px 0;">
                   ${item.name}
-                  ${item.is_custom_price ? '<br><small style="font-style: italic; color: #555;">(Giá riêng thỏa thuận)</small>' : ''}
+                  ${item.is_custom_price ? '<br><small style="font-style: italic; color: #555;">(Giá riêng)</small>' : ''}
                 </td>
+                <td style="text-align: center;">${item.unit}</td>
                 <td style="text-align: center;">${item.quantity}</td>
                 <td style="text-align: right;">${App.formatMoney(item.sale_price, false)}</td>
                 <td style="text-align: right; font-weight: 600;">${App.formatMoney(item.subtotal, false)}</td>
@@ -595,9 +778,15 @@ const POS = {
             <span>Tổng tiền hàng:</span>
             <span>${App.formatMoney(order.subtotal)}</span>
           </div>
+          ${order.promotion_discount > 0 ? `
+            <div style="display: flex; justify-content: space-between; color: #15803d;">
+              <span>Khuyến mãi (${order.promotion_name || ''}):</span>
+              <span>-${App.formatMoney(order.promotion_discount)}</span>
+            </div>
+          ` : ''}
           ${order.discount > 0 ? `
             <div style="display: flex; justify-content: space-between; color: #b91c1c;">
-              <span>Chiết khấu giảm giá:</span>
+              <span>Chiết khấu thêm:</span>
               <span>-${App.formatMoney(order.discount)}</span>
             </div>
           ` : ''}
@@ -639,5 +828,71 @@ const POS = {
     `;
 
     modal.classList.add('active');
+  },
+
+  setupEventListeners() {
+    const searchInput = document.getElementById('pos-search-input');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => this.renderProducts());
+      searchInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+          const val = searchInput.value.trim().toLowerCase();
+          if (val) {
+            // Find by barcode or code
+            const match = this.products.find(p => 
+              (p.barcode && p.barcode.toLowerCase() === val) || 
+              p.code.toLowerCase() === val ||
+              (p.units && p.units.some(u => u.barcode && u.barcode.toLowerCase() === val))
+            );
+            if (match) {
+              // Check if matched a specific unit's barcode
+              let matchedUnitName = null;
+              if (match.units) {
+                const uMatch = match.units.find(u => u.barcode && u.barcode.toLowerCase() === val);
+                if (uMatch) matchedUnitName = uMatch.unit_name;
+              }
+              this.addToCart(match.id, matchedUnitName);
+              searchInput.value = '';
+              this.renderProducts();
+            }
+          }
+        }
+      });
+    }
+
+    const customerSelect = document.getElementById('pos-customer-select');
+    if (customerSelect) {
+      customerSelect.addEventListener('change', (e) => {
+        this.selectCustomer(e.target.value);
+      });
+    }
+
+    const discountInput = document.getElementById('pos-discount-input');
+    if (discountInput) {
+      discountInput.addEventListener('input', () => this.updateTotals());
+    }
+
+    const vatSelect = document.getElementById('pos-vat-select');
+    if (vatSelect) {
+      vatSelect.addEventListener('change', () => this.updateTotals());
+    }
+
+    const paidInput = document.getElementById('pos-paid-input');
+    if (paidInput) {
+      paidInput.addEventListener('input', (e) => {
+        paidInput.dataset.manual = 'true';
+        this.customerPaid = parseFloat(e.target.value) || 0;
+        this.updateTotals();
+      });
+    }
+
+    const methodBtns = document.querySelectorAll('.payment-method-btn');
+    methodBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        methodBtns.forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        this.paymentMethod = e.target.dataset.method;
+      });
+    });
   }
 };

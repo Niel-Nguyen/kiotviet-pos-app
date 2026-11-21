@@ -43,7 +43,8 @@ ROLES = {
 ROLE_PERMISSIONS = {
     'admin': {
         'users:manage', 'settings:manage', 'backup:download', 'audit:view',
-        'reports:view', 'orders:create', 'orders:view',
+        'reports:view', 'orders:create', 'orders:view', 'orders:cancel', 'orders:edit',
+        'promotions:manage', 'promotions:view',
         'purchases:create', 'purchases:view', 'returns:create', 'returns:view',
         'inventory:adjust', 'inventory:view', 'products:manage', 'products:view',
         'products:view_cost', 'customers:manage', 'customers:view',
@@ -51,7 +52,8 @@ ROLE_PERMISSIONS = {
         'debt:manage'
     },
     'manager': {
-        'audit:view', 'reports:view', 'orders:create', 'orders:view',
+        'audit:view', 'reports:view', 'orders:create', 'orders:view', 'orders:cancel', 'orders:edit',
+        'promotions:manage', 'promotions:view',
         'purchases:create', 'purchases:view', 'returns:create', 'returns:view',
         'inventory:adjust', 'inventory:view', 'products:manage', 'products:view',
         'products:view_cost', 'customers:manage', 'customers:view',
@@ -60,6 +62,7 @@ ROLE_PERMISSIONS = {
     },
     'cashier': {
         'orders:create', 'orders:view', 'returns:create', 'returns:view',
+        'promotions:view',
         'products:view',
         'customers:manage', 'customers:view'
     },
@@ -70,11 +73,12 @@ ROLE_PERMISSIONS = {
     },
     'accountant': {
         'reports:view', 'orders:view', 'purchases:view', 'returns:view',
+        'promotions:view',
         'cash_flow:manage', 'cash_flow:view', 'debt:manage',
         'customers:view', 'suppliers:view', 'products:view', 'products:view_cost'
     },
     'viewer': {
-        'orders:view', 'purchases:view', 'returns:view',
+        'orders:view', 'purchases:view', 'returns:view', 'promotions:view',
         'products:view', 'customers:view', 'suppliers:view', 'inventory:view'
     }
 }

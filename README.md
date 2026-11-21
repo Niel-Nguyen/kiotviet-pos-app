@@ -68,6 +68,55 @@ Hệ thống quản lý bán hàng (POS), phân phối, kho hàng, dòng tiền 
   - Xem chuỗi sự kiện tuần tự của bất kỳ hóa đơn, phiếu nhập hay phiếu trả nào: ai tạo, thời điểm nào, chi tiết mặt hàng, số tiền, phương thức thanh toán, tiền thừa, công nợ, và liên kết trả hàng phát sinh sau đó.
   - Dữ liệu lịch sử trước khi bật audit được đánh dấu minh bạch là `'Hệ thống / Dữ liệu cũ'`, không tự gán danh tính giả mạo.
 
+### 8. Đơn Vị Tính & Quy Đổi Nhiều Cấp (Multi-Level Packaging Units)
+- **Cấu hình đơn vị cơ sở và đơn vị đóng gói linh hoạt**: Mỗi sản phẩm có một đơn vị cơ sở (Base Unit) và có thể cấu hình không giới hạn các đơn vị bán/đóng gói lớn hơn (ví dụ: *Lon → Lốc (6 lon) → Thùng (24 lon)*).
+- **Hệ số quy đổi chuẩn xác về đơn vị cơ sở**: Mô hình lưu `conversion_rate > 0` trực tiếp về đơn vị cơ sở, triệt tiêu hoàn toàn sai số làm tròn khi quy đổi lặp qua nhiều cấp.
+- **Hỗ trợ số lượng thập phân**: Cho phép nhập và bán số lượng thập phân (ví dụ: 1.5 kg, 0.25 thùng) với kiểm tra đầu vào nghiêm ngặt.
+- **Phân rã tồn kho trực quan (Stock Breakdown)**: Tự động phân tích tổng tồn kho thành các cấp đơn vị lớn và phần dư lẻ (ví dụ: tồn 383 lon hiển thị trực quan là `10 Thùng, 3 Lốc, 5 Lon`), không làm mất số lẻ.
+- **Tương thích ngược dữ liệu (Backward Compatible Migration)**: Tự động trích xuất các sản phẩm hiện có thành đơn vị cơ sở trong bảng `product_units`, không làm thay đổi giá trị tồn kho hay giá bán gốc.
+
+### 9. Bán Hàng Theo Đơn Vị Tính Tại POS (Unit-based POS Selling)
+- **Chọn đơn vị trực tiếp trên từng dòng giỏ hàng**: Thu ngân dễ dàng chuyển đổi đơn vị (Lon / Lốc / Thùng) ngay trong POS. Đơn giá, mã vạch và số tiền từng dòng tự động điều chỉnh theo hệ số quy đổi.
+- **Kiểm tra tồn kho thời gian thực theo đơn vị cơ sở**: Khi thêm hoặc đổi đơn vị, hệ thống tự động quy đổi sang số lượng đơn vị cơ sở để so sánh với tồn kho thực tế, ngăn chặn triệt để tình trạng bán vượt tồn.
+- **Tương thích hoàn hảo với Bảng giá riêng theo Khách hàng**: Khi khách hàng có chính sách giá riêng, đơn giá được quy đổi chính xác theo hệ số của đơn vị đã chọn mà **không bị nhân trùng lặp hệ số**.
+- **Xác thực toàn vẹn ở Backend**: Backend kiểm tra và tính toán lại giá, hệ số quy đổi và trừ tồn kho theo đơn vị cơ sở, đảm bảo dữ liệu không bị can thiệp trái phép từ client.
+
+### 10. Quản Lý Đơn Bán Chuyên Biệt & Trạng Thái Đơn Hàng (Order Management & Lifecycle)
+- **Màn hình Quản lý Hóa đơn chuyên biệt (`view-orders`)**:
+  - Tìm kiếm và lọc đa tiêu chí: mã hóa đơn, tên/số điện thoại khách hàng, trạng thái (`completed`, `pending`, `cancelled`), phương thức thanh toán, khoảng ngày.
+  - Phân trang phía máy chủ (Server-side pagination) với kích thước trang linh hoạt (10, 25, 50, 100 dòng), kèm thẻ tổng kết số lượng đơn và doanh thu theo bộ lọc.
+  - Xem chi tiết hóa đơn trong Modal trực quan, in lại hóa đơn nhiệt 80mm bất kỳ lúc nào.
+- **Vòng đời đơn hàng & Quản lý đơn hàng chờ (Pending Orders)**:
+  - Hỗ trợ trạng thái **Đơn hàng chờ (`pending`)**: Lưu đơn hàng nhưng chưa giao ngay. Đơn pending **chưa trừ tồn kho**, **chưa ghi nhận doanh thu** và **chưa tính công nợ**.
+  - Theo dõi số lượng và tổng tiền đơn pending theo từng khách hàng.
+  - Chức năng **Hoàn tất đơn chờ**: Kiểm tra tồn kho, trừ kho, ghi nhận doanh thu và cập nhật công nợ khi giao hàng.
+  - Sửa ghi chú đơn pending ngay trong chi tiết đơn hàng.
+- **Hủy hóa đơn an toàn (Safe Order Cancellation & Reversal)**:
+  - Quyền hạn riêng `orders:cancel` được kiểm soát nghiêm ngặt bằng RBAC.
+  - Nhập lý do hủy bắt buộc.
+  - **Cơ chế hoàn tác giao dịch toàn diện**: Tự động hoàn trả tồn kho về trạng thái trước khi bán, ghi phiếu chi hoàn tiền trong sổ quỹ nếu khách đã trả tiền mặt, và cấn trừ lại công nợ khách hàng nếu đơn bán nợ.
+- **Nhân bản đơn hàng (Duplicate Order)**: Tải toàn bộ danh sách mặt hàng, đơn vị tính, số lượng và thông tin khách hàng từ hóa đơn cũ vào POS để tạo đơn mới nhanh chóng.
+
+### 11. Xuất Excel Thuần Python OpenXML & Bộ Chọn Cột Linh Hoạt
+- **Sinh file `.xlsx` chuẩn OpenXML thuần Python**: Hoàn toàn **không dùng thư viện ngoài (zero external pip packages)** như `openpyxl` hay `pandas`, chỉ sử dụng `zipfile` và template XML của Python Standard Library. Tương thích 100% với Microsoft Excel, Google Sheets, LibreOffice.
+- **Xuất dữ liệu cho mọi phân hệ**: Đơn bán hàng, Sản phẩm tồn kho, Khách hàng, Nhà cung cấp, Nhập hàng, Đổi trả hàng, Sổ quỹ.
+- **Bộ chọn cột linh hoạt (Column Selector Modal)**: Cho phép người dùng tùy chọn bật/tắt các cột dữ liệu cần xuất hoặc ẩn trên bảng dữ liệu. Cấu hình cột được ghi nhớ tự động trong `localStorage`.
+- **Bảo mật giá vốn theo phân quyền (RBAC)**: Thu ngân và Viewer khi xuất file Excel sẽ bị backend **tự động loại bỏ hoàn toàn các cột giá vốn (`cost_price`, `total_cost`)**, ngăn chặn lộ bí mật kinh doanh.
+
+### 12. Quản Lý Khuyến Mãi Đa Phạm Vi (Promotions Engine)
+- **Thiết lập chương trình khuyến mãi linh hoạt**:
+  - Phạm vi áp dụng: Toàn bộ đơn hàng (`order`), theo danh mục (`category`), hoặc theo từng sản phẩm cụ thể (`product`).
+  - Loại chiết khấu: Theo phần trăm (`percentage` %) hoặc số tiền cố định (`fixed_amount` đ).
+  - Điều kiện áp dụng: Giá trị đơn hàng tối thiểu (`min_order_amount`), thời gian hiệu lực từ ngày đến ngày.
+- **Tự động đề xuất & Áp dụng tại POS**: Khi quét hàng hoặc thêm giỏ hàng, hệ thống tự động kiểm tra các chương trình khuyến mãi đang hoạt động và áp dụng mức giảm tối ưu nhất.
+- **Quy tắc không cộng dồn (Non-stacking Rule)**: Ngăn chặn giảm giá trùng lặp giữa khuyến mãi tự động và chiết khấu thủ công.
+- **Lưu Snapshot khuyến mãi trong đơn hàng**: Ghi nhận mã khuyến mãi, tên chương trình và số tiền giảm giá trực tiếp vào hóa đơn để phục vụ báo cáo và kiểm toán.
+
+### 13. Ghi Chú Đơn Hàng Riêng Biệt (Dedicated Order Notes)
+- Ô nhập ghi chú riêng biệt tại giao diện POS, lưu trực tiếp vào cột `notes` của bảng `orders`.
+- Hiển thị ghi chú rõ ràng trên màn hình chi tiết đơn bán và trên phiếu in nhiệt 80mm.
+- Tách biệt hoàn toàn giữa ghi chú của thu ngân/khách hàng và các thông điệp ghi nợ tự động của hệ thống.
+
 ---
 
 ## 🔒 Khuyến Cáo Bảo Mật Mạng (Security Notice)
@@ -79,12 +128,14 @@ Hệ thống quản lý bán hàng (POS), phân phối, kho hàng, dòng tiền 
 ---
 
 ## 🗄️ Nâng Cấp Cơ Sở Dữ Liệu & Khôi Phục (Database Migration & Recovery)
-- **Tự động sao lưu an toàn trước migration**: Trước khi áp dụng migration v2, hệ thống tự động tạo bản sao lưu nguyên vẹn tại:
-  `data/kiotviet_backup_pre_v2.db`
+- **Tự động sao lưu an toàn trước migration**: Trước mỗi bước nâng cấp schema, hệ thống tự động tạo bản sao lưu nguyên vẹn:
+  - `data/kiotviet_backup_pre_v2.db` (trước khi nâng cấp RBAC & Audit)
+  - `data/kiotviet_backup_pre_v3.db` (trước khi nâng cấp Đơn vị quy đổi, Khuyến mãi & Vòng đời đơn hàng)
 - **Bảng theo dõi Migration (`schema_migrations`)**: Quản lý lịch sử nâng cấp schema có phiên bản:
   - Phiên bản 1 (`v1_initial_schema`): Schema cốt lõi hàng hóa, khách hàng, đơn hàng, sổ quỹ.
   - Phiên bản 2 (`v2_auth_rbac_audit`): Thêm bảng `users`, `sessions`, `audit_logs` và gắn cột `user_id`, `user_name` vào tất cả chứng từ.
-- **Cách khôi phục dữ liệu**: Nếu muốn khôi phục về trạng thái trước migration, chỉ cần dừng server và copy đè file `kiotviet_backup_pre_v2.db` thành `kiotviet.db`.
+  - Phiên bản 3 (`v3_units_promotions_orders`): Thêm bảng `product_units` (đơn vị đóng gói quy đổi), `promotions` (chương trình khuyến mãi), thêm cột `status`, `notes`, `promotion_id`, `promotion_name`, `promotion_discount` vào `orders`, và `unit_id`, `unit_name`, `conversion_rate`, `base_quantity` vào `order_items`, `purchase_items`, `return_items`.
+- **Cách khôi phục dữ liệu**: Nếu muốn khôi phục về trạng thái trước migration, chỉ cần dừng server và copy đè file backup tương ứng thành `kiotviet.db`.
 
 ---
 
@@ -115,20 +166,34 @@ Railway cung cấp HTTPS tự động cho Railway domain. Volume có giới hạ
 
 ---
 
-## 🧪 Kiểm Thử Tự Động (Automated Test Suite)
-Bộ kiểm thử tự động toàn diện kiểm chứng 8 tiêu chí nghiệm thu quan trọng tại `tests/test_auth_audit.py`:
-1. `test_01_bootstrap_and_lockdown`: Khởi tạo admin ban đầu và khóa chặt endpoint bootstrap.
+## 🧪 Kiểm Thử Tự Động (Automated Test Suites)
+
+Hệ thống đi kèm 2 bộ kiểm thử tự động toàn diện, không phụ thuộc bất kỳ thư viện ngoài nào (100% Python Standard Library):
+
+### 1. Kiểm Thử Phân Quyền & Kiểm Toán (`tests/test_auth_audit.py` - 9/9 Passed)
+1. `test_01_bootstrap_and_lockdown`: Khởi tạo admin ban đầu an toàn và khóa chặt endpoint bootstrap.
 2. `test_02_unauthenticated_requests_blocked`: Chặn 401 với mọi request chưa đăng nhập.
 3. `test_03_rbac_permissions_enforced`: Thu ngân bị ẩn giá vốn và chặn nhập kho/sổ quỹ; Kho bị chặn sổ quỹ/đơn bán.
 4. `test_04_business_audit_trail_and_timeline`: Ghi audit đầy đủ khi bán hàng và truy vấn timeline thành công.
 5. `test_05_account_lock_instant_session_revocation`: Khóa tài khoản thu hồi phiên lập tức, chặn đăng nhập mới.
-6. `test_06_audit_logs_immutability`: Chặn sửa/xóa audit log qua API (403).
+6. `test_06_audit_logs_immutability`: Chặn sửa/xóa audit log qua API (HTTP 403 `AUDIT_IMMUTABLE`).
 7. `test_07_transaction_rollback_on_audit_failure`: Rollback toàn bộ nghiệp vụ nếu audit thất bại.
 8. `test_08_sales_return_linked_to_order_timeline`: Trả hàng liên kết chính xác vào timeline của hóa đơn gốc.
+9. `test_09_healthz_unauthenticated`: Endpoint kiểm tra trạng thái hoạt động không yêu cầu đăng nhập.
 
-Chạy kiểm thử:
+### 2. Kiểm Thử Tính Năng Nâng Cao v3 (`tests/test_v3_features.py` - 7/7 Passed)
+1. `test_01_product_units_crud_and_conversion_integrity`: Quản lý đơn vị đóng gói nhiều cấp, validate `conversion_rate > 0`, phân rã tồn kho (`format_stock_breakdown`).
+2. `test_02_pos_order_with_packaging_unit_stock_deduction`: Bán hàng theo thùng/lốc tại POS, trừ kho chuẩn xác theo đơn vị cơ sở.
+3. `test_03_customer_specific_price_with_packaging_unit`: Bảng giá riêng theo khách hàng kết hợp đơn vị quy đổi không nhân trùng lặp.
+4. `test_04_pending_order_and_completion_flow`: Đơn hàng chờ (pending) không trừ kho, khi hoàn tất mới trừ kho và tính công nợ.
+5. `test_05_order_cancellation_with_stock_cash_debt_reversal`: Hủy đơn an toàn hoàn trả tồn kho, ghi phiếu chi quỹ và cấn trừ công nợ khách.
+6. `test_06_promotions_engine_and_order_snapshot`: Động cơ khuyến mãi tự động, kiểm tra điều kiện, chống cộng dồn chiết khấu, lưu snapshot vào đơn bán.
+7. `test_07_openxml_excel_export_and_rbac_cost_masking`: Sinh file `.xlsx` chuẩn OpenXML bằng `zipfile` thuần Python và ẩn giá vốn với Thu ngân/Viewer theo RBAC.
+
+### Chạy toàn bộ kiểm thử:
 ```powershell
 & "C:\Users\DELL\AppData\Local\Programs\Python\Python311\python.exe" "C:\Users\DELL\.gemini\antigravity\scratch\kiotviet-pos-app\tests\test_auth_audit.py"
+& "C:\Users\DELL\AppData\Local\Programs\Python\Python311\python.exe" "C:\Users\DELL\.gemini\antigravity\scratch\kiotviet-pos-app\tests\test_v3_features.py"
 ```
 
 ---
@@ -156,19 +221,26 @@ Khi server khởi chạy, màn hình sẽ hiển thị:
 ```text
 kiotviet-pos-app/
 ├── backend/
-│   ├── database.py       # Khởi tạo SQLite DB, quản lý schema, seed dữ liệu mẫu
-│   └── server.py         # Multi-threaded HTTP Server, REST API endpoints, MAC cost
+│   ├── auth.py           # Quản lý xác thực, PBKDF2 băm mật khẩu, phiên, phân quyền RBAC
+│   ├── database.py       # Khởi tạo SQLite DB, quản lý schema migrations, seed dữ liệu mẫu
+│   ├── export_xlsx.py    # Bộ sinh file Excel .xlsx chuẩn OpenXML thuần Python (zipfile + XML)
+│   └── server.py         # Multi-threaded HTTP Server, REST API endpoints, MAC cost, Audit
 ├── frontend/
 │   ├── css/
-│   │   └── style.css     # Theme KiotViet hiện đại, thẻ cảnh báo, hóa đơn in nhiệt
+│   │   └── style.css     # Enterprise Design System, theme KiotPro, modal, hóa đơn in nhiệt
 │   ├── js/
-│   │   ├── api.js        # Service kết nối API RESTful
-│   │   ├── pos.js        # Logic bán hàng, giỏ hàng, bảng giá riêng, thuế VAT, tiền thừa
-│   │   └── app.js        # Điều hướng SPA, sổ quỹ, thẻ kho, khách trả hàng, cài đặt
-│   └── index.html        # Giao diện chính SPA
+│   │   ├── api.js        # Service kết nối API RESTful (Auth, Units, Orders, Promos, Export)
+│   │   ├── pos.js        # Bán hàng POS, giỏ hàng đa đơn vị, khuyến mãi, ghi chú, hóa đơn
+│   │   └── app.js        # Điều hướng SPA, Đơn bán, Khuyến mãi, Chọn cột, Xuất Excel, Audit
+│   └── index.html        # Giao diện chính SPA (View Hóa đơn, Khuyến mãi, Modal chọn cột...)
+├── tests/
+│   ├── test_auth_audit.py   # Test suite xác thực, bảo mật, RBAC và kiểm toán nghiệp vụ
+│   └── test_v3_features.py  # Test suite đơn vị đóng gói, đơn bán, khuyến mãi, Excel OpenXML
 ├── data/
-│   └── kiotviet.db       # Cơ sở dữ liệu SQLite
+│   ├── kiotviet.db                # Cơ sở dữ liệu SQLite chính
+│   ├── kiotviet_backup_pre_v2.db  # Bản sao lưu an toàn trước migration v2
+│   └── kiotviet_backup_pre_v3.db  # Bản sao lưu an toàn trước migration v3
 ├── start.bat             # File khởi động nhanh cho Windows
 ├── start.ps1             # Script khởi động PowerShell
-└── README.md             # Tài liệu chi tiết
+└── README.md             # Tài liệu chi tiết hướng dẫn vận hành và kiến trúc
 ```

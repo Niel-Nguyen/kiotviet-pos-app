@@ -13,6 +13,9 @@ const App = {
   userPermissions: new Set(),
   auditPage: 1,
   auditLimit: 25,
+  ordersPage: 1,
+  ordersLimit: 15,
+  currentColumnSelectorView: null,
 
   VIEW_PERMISSIONS: {
     'users': 'users:manage',
@@ -26,6 +29,8 @@ const App = {
     'suppliers': 'suppliers:view',
     'products': 'products:view',
     'pos': 'orders:create',
+    'orders': 'orders:view',
+    'promotions': 'promotions:view',
     'dashboard': null
   },
 
@@ -168,7 +173,9 @@ const App = {
       'reports': 'Báo cáo doanh thu & Lợi nhuận',
       'settings': 'Cài đặt hệ thống & Sao lưu',
       'audit': 'Nhật ký hoạt động & Truy vết kiểm toán',
-      'users': 'Quản lý Nhân viên & Phân quyền'
+      'users': 'Quản lý Nhân viên & Phân quyền',
+      'orders': 'Quản lý Hóa đơn & Đơn bán',
+      'promotions': 'Chương trình Khuyến mãi & Chiết khấu'
     };
 
     const titleElem = document.getElementById('page-title-text');
@@ -233,6 +240,12 @@ const App = {
         break;
       case 'users':
         this.renderUsersView();
+        break;
+      case 'orders':
+        this.renderOrdersView();
+        break;
+      case 'promotions':
+        this.renderPromotionsView();
         break;
     }
   },
@@ -488,7 +501,7 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header">
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
           <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
             <input type="text" id="prod-search-input" class="form-control" style="max-width: 280px;" placeholder="Tìm theo tên, mã SKU, mã vạch...">
             <select id="prod-cat-filter" class="form-control" style="max-width: 170px;">
@@ -498,7 +511,11 @@ const App = {
               <input type="checkbox" id="prod-low-stock-filter"> Cảnh báo tồn kho
             </label>
           </div>
-          <button class="btn btn-primary" onclick="App.openCreateProductModal()">+ Thêm hàng hóa</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.openColumnSelector('products')">Chọn cột</button>
+            <button class="btn btn-outline" onclick="App.exportExcel('products')">Xuất Excel</button>
+            <button class="btn btn-primary" onclick="App.openCreateProductModal()">+ Thêm hàng hóa</button>
+          </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div class="table-responsive">
@@ -509,10 +526,10 @@ const App = {
                   <th>Tên hàng hóa</th>
                   <th>Danh mục</th>
                   <th>Đơn vị tính</th>
-                  <th>Quy đổi</th>
+                  <th>Quy đổi đóng gói</th>
                   <th class="text-right">Giá vốn (MAC)</th>
                   <th class="text-right">Giá bán</th>
-                  <th class="text-center">Tồn kho</th>
+                  <th class="text-center">Tồn kho & Quy đổi</th>
                   <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
@@ -560,7 +577,20 @@ const App = {
         return;
       }
 
-      tbody.innerHTML = products.map(p => `
+      tbody.innerHTML = products.map(p => {
+        let packagingUnitsHtml = '';
+        if (p.units && p.units.length > 1) {
+          packagingUnitsHtml = p.units
+            .filter(u => !u.is_base)
+            .map(u => `<span class="unit-tag-pill">${u.name} (x${u.conversion_rate})</span>`)
+            .join(' ');
+        } else if (p.sub_unit) {
+          packagingUnitsHtml = `<small style="color: var(--color-text-muted);">1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit}</small>`;
+        } else {
+          packagingUnitsHtml = '<span style="color: var(--color-text-disabled);">---</span>';
+        }
+
+        return `
         <tr>
           <td>
             <strong>${p.code}</strong><br>
@@ -571,23 +601,30 @@ const App = {
           </td>
           <td><span class="badge-tag badge-blue">${p.category || 'Chung'}</span></td>
           <td><strong>${p.unit}</strong></td>
-          <td>
-            ${p.sub_unit ? `<small style="color: var(--color-text-muted);">1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit}</small>` : '<span style="color: var(--color-text-disabled);">---</span>'}
-          </td>
-          <td class="text-right tabular-nums">${this.formatMoney(p.cost_price)}</td>
+          <td>${packagingUnitsHtml}</td>
+          <td class="text-right tabular-nums">${p.cost_price ? this.formatMoney(p.cost_price) : '***'}</td>
           <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(p.sale_price)}</td>
           <td class="text-center">
             <span class="badge-tag ${p.stock <= p.min_stock ? 'badge-red' : 'badge-green'}">
-              ${p.stock}
+              ${p.stock} ${p.unit}
             </span>
+            ${p.stock_breakdown && p.stock_breakdown !== `${p.stock} ${p.unit}` ? `
+              <div style="font-size: 0.75rem; color: var(--color-primary); font-weight: 600; margin-top: 3px;">
+                ${p.stock_breakdown}
+              </div>
+            ` : ''}
           </td>
           <td class="text-right">
-            <button class="btn btn-sm btn-outline" onclick="App.openStockLogsModal(${p.id})" title="Thẻ kho">Thẻ kho</button>
-            <button class="btn btn-sm btn-outline" onclick="App.openAdjustStockModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.stock})" title="Kiểm kho">Kiểm kho</button>
-            <button class="btn btn-sm btn-outline" onclick="App.openEditProductModal(${p.id})" title="Sửa">Sửa</button>
+            <div style="display: flex; gap: 4px; justify-content: flex-end;">
+              <button class="btn btn-sm btn-outline" onclick="App.openProductUnitsModal(${p.id})" title="Quy đổi đơn vị tính">Đơn vị</button>
+              <button class="btn btn-sm btn-outline" onclick="App.openStockLogsModal(${p.id})" title="Thẻ kho">Thẻ kho</button>
+              <button class="btn btn-sm btn-outline" onclick="App.openAdjustStockModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.stock})" title="Kiểm kho">Kiểm kho</button>
+              <button class="btn btn-sm btn-outline" onclick="App.openEditProductModal(${p.id})" title="Sửa">Sửa</button>
+            </div>
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     } catch (err) {
       App.toast('Không thể tải sản phẩm: ' + err.message, 'error');
     }
@@ -759,12 +796,16 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header">
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
           <div class="card-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>
             <span>Danh sách phiếu nhập hàng từ Nhà cung cấp</span>
           </div>
-          <button class="btn btn-primary" onclick="App.openCreatePurchaseModal()">+ Tạo phiếu nhập hàng</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.openColumnSelector('purchases')">Chọn cột</button>
+            <button class="btn btn-outline" onclick="App.exportExcel('purchases')">Xuất Excel</button>
+            <button class="btn btn-primary" onclick="App.openCreatePurchaseModal()">+ Tạo phiếu nhập hàng</button>
+          </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div class="table-responsive">
@@ -1014,11 +1055,15 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header">
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
           <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
-            <input type="text" id="cust-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã khách...">
+            <input type="text" id="cust-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã khách, email...">
           </div>
-          <button class="btn btn-primary" onclick="App.openCreateCustomerModal()">+ Thêm khách hàng</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.openColumnSelector('customers')">Chọn cột</button>
+            <button class="btn btn-outline" onclick="App.exportExcel('customers')">Xuất Excel</button>
+            <button class="btn btn-primary" onclick="App.openCreateCustomerModal()">+ Thêm khách hàng</button>
+          </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div class="table-responsive">
@@ -1031,12 +1076,13 @@ const App = {
                   <th>Nhóm khách</th>
                   <th class="text-right">Tổng mua</th>
                   <th class="text-right">Công nợ hiện tại</th>
+                  <th class="text-center">Đơn chờ xử lý</th>
                   <th class="text-center">Bảng giá riêng</th>
                   <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="customers-table-body">
-                <tr><td colspan="8" class="empty-state">Đang tải danh sách khách hàng...</td></tr>
+                <tr><td colspan="9" class="empty-state">Đang tải danh sách khách hàng...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1056,7 +1102,7 @@ const App = {
       if (!tbody) return;
 
       if (customers.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không tìm thấy khách hàng phù hợp</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Không tìm thấy khách hàng phù hợp</td></tr>`;
         return;
       }
 
@@ -1072,6 +1118,13 @@ const App = {
           <td class="text-right tabular-nums font-bold">${this.formatMoney(c.total_spent)}</td>
           <td class="text-right tabular-nums font-bold" style="color: ${c.debt > 0 ? 'var(--color-danger)' : 'var(--color-success)'};">
             ${this.formatMoney(c.debt)}
+          </td>
+          <td class="text-center">
+            ${c.pending_orders_count > 0 ? `
+              <button class="btn btn-sm btn-outline order-badge-pending" onclick="App.viewCustomerPendingOrders(${c.id}, '${c.name.replace(/'/g, "\\'")}')" title="Xem danh sách đơn chờ">
+                ${c.pending_orders_count} đơn (${this.formatMoney(c.pending_orders_amount)})
+              </button>
+            ` : '<span style="color: var(--color-text-disabled); font-size: 0.8rem;">0 đơn</span>'}
           </td>
           <td class="text-center">
             <button class="btn btn-sm btn-outline" style="background-color: #fffbeb; border-color: #fde68a; color: #92400e; font-weight: 600;" onclick="App.openCustomerPricingModal(${c.id}, '${c.name.replace(/'/g, "\\'")}')">
@@ -1316,12 +1369,15 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header">
-          <div class="card-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/></svg>
-            <span>Danh sách Nhà cung cấp nguồn hàng</span>
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
+            <input type="text" id="supp-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã NCC, email...">
           </div>
-          <button class="btn btn-primary" onclick="App.openCreateSupplierModal()">+ Thêm Nhà cung cấp</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.openColumnSelector('suppliers')">Chọn cột</button>
+            <button class="btn btn-outline" onclick="App.exportExcel('suppliers')">Xuất Excel</button>
+            <button class="btn btn-primary" onclick="App.openCreateSupplierModal()">+ Thêm Nhà cung cấp</button>
+          </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div class="table-responsive">
@@ -1346,8 +1402,14 @@ const App = {
       </div>
     `;
 
+    document.getElementById('supp-search-input')?.addEventListener('input', () => this.loadSuppliersTable());
+    this.loadSuppliersTable();
+  },
+
+  async loadSuppliersTable() {
+    const q = document.getElementById('supp-search-input')?.value || '';
     try {
-      const suppliers = await API.getSuppliers();
+      const suppliers = await API.getSuppliers({ q });
       const tbody = document.getElementById('suppliers-table-body');
       if (!tbody) return;
 
@@ -1457,12 +1519,16 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header">
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
           <div class="card-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
             <span>Quản lý Khách Trả Hàng (Hoàn tiền / Giảm trừ nợ)</span>
           </div>
-          <button class="btn btn-primary" onclick="App.openCreateReturnModal()">+ Lập phiếu trả hàng</button>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.openColumnSelector('returns')">Chọn cột</button>
+            <button class="btn btn-outline" onclick="App.exportExcel('returns')">Xuất Excel</button>
+            <button class="btn btn-primary" onclick="App.openCreateReturnModal()">+ Lập phiếu trả hàng</button>
+          </div>
         </div>
         <div class="card-body" style="padding: 0;">
           <div class="table-responsive">
@@ -1644,6 +1710,8 @@ const App = {
             </select>
           </div>
           <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.openColumnSelector('cash-flow')">Chọn cột</button>
+            <button class="btn btn-outline" onclick="App.exportExcel('cash-flow')">Xuất Excel</button>
             <button class="btn btn-success" onclick="App.openCreateCashFlowModal('receipt')">+ Lập Phiếu Thu</button>
             <button class="btn btn-danger" onclick="App.openCreateCashFlowModal('payment')">- Lập Phiếu Chi</button>
           </div>
@@ -2760,7 +2828,18 @@ const App = {
       'USER_UNLOCK': { label: 'Mở khóa tài khoản', badgeClass: 'badge-green', markerClass: 'marker-success' },
       'USER_RESET_PASSWORD': { label: 'Đặt lại mật khẩu', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
       'USER_PASSWORD_CHANGE': { label: 'Đổi mật khẩu', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
-      'USER_REVOKE_SESSIONS': { label: 'Thu hồi phiên đăng nhập', badgeClass: 'badge-amber', markerClass: 'marker-warning' }
+      'USER_REVOKE_SESSIONS': { label: 'Thu hồi phiên đăng nhập', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
+      'ORDER_CANCEL': { label: 'Hủy đơn hàng', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'ORDER_COMPLETE': { label: 'Hoàn tất đơn hàng', badgeClass: 'badge-green', markerClass: 'marker-success' },
+      'ORDER_DUPLICATE': { label: 'Nhân bản đơn hàng', badgeClass: 'badge-blue', markerClass: 'marker-info' },
+      'ORDER_UPDATE': { label: 'Cập nhật đơn hàng', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'PRODUCT_UNIT_CREATE': { label: 'Thêm đơn vị quy đổi', badgeClass: 'badge-blue', markerClass: 'marker-info' },
+      'PRODUCT_UNIT_UPDATE': { label: 'Sửa đơn vị quy đổi', badgeClass: 'badge-tag', markerClass: 'marker-info' },
+      'PRODUCT_UNIT_DELETE': { label: 'Xóa đơn vị quy đổi', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'PROMOTION_CREATE': { label: 'Tạo khuyến mãi', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
+      'PROMOTION_UPDATE': { label: 'Sửa khuyến mãi', badgeClass: 'badge-tag', markerClass: 'marker-purple' },
+      'PROMOTION_DELETE': { label: 'Xóa khuyến mãi', badgeClass: 'badge-red', markerClass: 'marker-danger' },
+      'EXCEL_EXPORT': { label: 'Xuất file Excel', badgeClass: 'badge-tag', markerClass: 'marker-info' }
     };
     return map[action] || { label: action, badgeClass: 'badge-tag', markerClass: 'marker-info' };
   },
@@ -2794,7 +2873,13 @@ const App = {
       'message': 'Thông tin',
       'username': 'Tên đăng nhập',
       'full_name': 'Họ và tên',
-      'role': 'Vai trò'
+      'role': 'Vai trò',
+      'unit_name': 'Đơn vị tính',
+      'conversion_rate': 'Tỷ lệ quy đổi',
+      'promo_code': 'Mã khuyến mãi',
+      'discount_value': 'Giá trị giảm',
+      'cancel_reason': 'Lý do hủy đơn',
+      'stock_breakdown': 'Quy đổi tồn'
     };
     return map[key] || key;
   },
@@ -2812,6 +2897,1099 @@ const App = {
       return pm[val] || val;
     }
     return val;
+  },
+
+  // ==========================================
+  // COLUMN SELECTOR & LOCAL STORAGE PERSISTENCE
+  // ==========================================
+  COLUMN_DEFS: {
+    'orders': [
+      { key: 'code', label: 'Mã đơn hàng' },
+      { key: 'created_at', label: 'Thời gian' },
+      { key: 'customer_name', label: 'Khách hàng' },
+      { key: 'status', label: 'Trạng thái' },
+      { key: 'items_summary', label: 'Mặt hàng' },
+      { key: 'total_amount', label: 'Tổng tiền' },
+      { key: 'discount', label: 'Giảm giá / KM' },
+      { key: 'final_amount', label: 'Khách cần trả' },
+      { key: 'actual_paid', label: 'Đã thanh toán' },
+      { key: 'debt_amount', label: 'Ghi nợ' },
+      { key: 'payment_method', label: 'Hình thức TT' },
+      { key: 'notes', label: 'Ghi chú' }
+    ],
+    'products': [
+      { key: 'code', label: 'Mã SP / SKU' },
+      { key: 'barcode', label: 'Mã vạch' },
+      { key: 'name', label: 'Tên hàng hóa' },
+      { key: 'category', label: 'Danh mục' },
+      { key: 'unit', label: 'Đơn vị tính' },
+      { key: 'stock', label: 'Tồn kho' },
+      { key: 'cost_price', label: 'Giá vốn (MAC)' },
+      { key: 'sale_price', label: 'Giá bán' }
+    ],
+    'customers': [
+      { key: 'code', label: 'Mã KH' },
+      { key: 'name', label: 'Tên khách hàng' },
+      { key: 'phone', label: 'Số điện thoại' },
+      { key: 'group_name', label: 'Nhóm khách' },
+      { key: 'total_spent', label: 'Tổng chi tiêu' },
+      { key: 'debt', label: 'Công nợ hiện tại' },
+      { key: 'address', label: 'Địa chỉ' }
+    ],
+    'suppliers': [
+      { key: 'code', label: 'Mã NCC' },
+      { key: 'name', label: 'Tên nhà cung cấp' },
+      { key: 'phone', label: 'Số điện thoại' },
+      { key: 'debt', label: 'Công nợ cần trả' },
+      { key: 'address', label: 'Địa chỉ' }
+    ],
+    'purchases': [
+      { key: 'code', label: 'Mã phiếu nhập' },
+      { key: 'created_at', label: 'Ngày nhập' },
+      { key: 'supplier_name', label: 'Nhà cung cấp' },
+      { key: 'total_amount', label: 'Tổng tiền' },
+      { key: 'paid_amount', label: 'Đã trả' },
+      { key: 'debt_amount', label: 'Còn nợ' },
+      { key: 'status', label: 'Trạng thái' }
+    ],
+    'returns': [
+      { key: 'code', label: 'Mã phiếu trả' },
+      { key: 'created_at', label: 'Ngày trả' },
+      { key: 'order_code', label: 'Hóa đơn gốc' },
+      { key: 'customer_name', label: 'Khách hàng' },
+      { key: 'total_refund', label: 'Tổng tiền trả' },
+      { key: 'reason', label: 'Lý do' }
+    ],
+    'cash-flow': [
+      { key: 'code', label: 'Mã phiếu' },
+      { key: 'created_at', label: 'Thời gian' },
+      { key: 'type', label: 'Loại phiếu (Thu/Chi)' },
+      { key: 'category', label: 'Hạng mục' },
+      { key: 'amount', label: 'Số tiền' },
+      { key: 'fund_type', label: 'Hình thức quỹ' },
+      { key: 'notes', label: 'Diễn giải' }
+    ]
+  },
+
+  getSavedColumns(viewName) {
+    try {
+      const saved = localStorage.getItem('kiotpro_cols_' + viewName);
+      if (saved) {
+        const arr = JSON.parse(saved);
+        if (Array.isArray(arr) && arr.length > 0) return arr;
+      }
+    } catch (e) {}
+    const defs = this.COLUMN_DEFS[viewName];
+    return defs ? defs.map(d => d.key) : [];
+  },
+
+  openColumnSelector(viewName) {
+    this.currentColumnSelectorView = viewName;
+    const defs = this.COLUMN_DEFS[viewName] || [];
+    const saved = this.getSavedColumns(viewName);
+    const container = document.getElementById('cs-checkboxes-container');
+    const title = document.getElementById('cs-title');
+    if (!container) return;
+
+    if (title) title.textContent = `Tùy chỉnh cột: ${viewName}`;
+
+    container.innerHTML = defs.map(col => `
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--color-border); background: var(--color-bg-alt);">
+        <input type="checkbox" value="${col.key}" ${saved.includes(col.key) ? 'checked' : ''} class="cs-col-chk">
+        <span style="font-weight: 500; font-size: 0.84rem;">${col.label}</span>
+      </label>
+    `).join('');
+
+    const modal = document.getElementById('modal-column-selector');
+    if (modal) modal.classList.add('active');
+  },
+
+  selectAllColumns(checked) {
+    document.querySelectorAll('.cs-col-chk').forEach(chk => chk.checked = checked);
+  },
+
+  saveColumnSelection() {
+    if (!this.currentColumnSelectorView) return;
+    const chks = document.querySelectorAll('.cs-col-chk:checked');
+    const keys = Array.from(chks).map(c => c.value);
+    if (keys.length === 0) {
+      this.toast('Vui lòng chọn ít nhất 1 cột hiển thị', 'warning');
+      return;
+    }
+    localStorage.setItem('kiotpro_cols_' + this.currentColumnSelectorView, JSON.stringify(keys));
+    const modal = document.getElementById('modal-column-selector');
+    if (modal) modal.classList.remove('active');
+    this.toast('Đã lưu cấu hình cột hiển thị!', 'success');
+    this.refreshCurrentView();
+  },
+
+  // ==========================================
+  // EXCEL EXPORT DISPATCHER
+  // ==========================================
+  exportExcel(entity) {
+    const params = {};
+    if (entity === 'orders') {
+      const q = document.getElementById('order-filter-q')?.value;
+      const status = document.getElementById('order-filter-status')?.value;
+      const payment = document.getElementById('order-filter-payment')?.value;
+      const from = document.getElementById('order-filter-from')?.value;
+      const to = document.getElementById('order-filter-to')?.value;
+      if (q) params.q = q;
+      if (status) params.status = status;
+      if (payment) params.payment_method = payment;
+      if (from) params.date_from = from;
+      if (to) params.date_to = to;
+    } else if (entity === 'products') {
+      const q = document.getElementById('prod-search-input')?.value;
+      const cat = document.getElementById('prod-cat-filter')?.value;
+      const lowStock = document.getElementById('prod-low-stock-filter')?.checked;
+      if (q) params.q = q;
+      if (cat) params.category = cat;
+      if (lowStock) params.low_stock = '1';
+    } else if (entity === 'customers') {
+      const q = document.getElementById('cust-search-input')?.value;
+      if (q) params.q = q;
+    } else if (entity === 'suppliers') {
+      const q = document.getElementById('supp-search-input')?.value;
+      if (q) params.q = q;
+    } else if (entity === 'purchases') {
+      const supp = document.getElementById('purchase-supplier-filter')?.value;
+      const from = document.getElementById('purchase-filter-from')?.value;
+      const to = document.getElementById('purchase-filter-to')?.value;
+      if (supp) params.supplier_id = supp;
+      if (from) params.date_from = from;
+      if (to) params.date_to = to;
+    } else if (entity === 'returns') {
+      const from = document.getElementById('return-filter-from')?.value;
+      const to = document.getElementById('return-filter-to')?.value;
+      if (from) params.date_from = from;
+      if (to) params.date_to = to;
+    } else if (entity === 'cash-flow') {
+      const type = document.getElementById('cf-type-filter')?.value;
+      const from = document.getElementById('cf-filter-from')?.value;
+      const to = document.getElementById('cf-filter-to')?.value;
+      if (type && type !== 'all') params.type = type === 'receipt' ? 'in' : 'out';
+      if (from) params.date_from = from;
+      if (to) params.date_to = to;
+    }
+
+    const savedCols = this.getSavedColumns(entity);
+    if (savedCols && savedCols.length > 0) {
+      params.columns = savedCols.join(',');
+    }
+
+    this.toast(`Đang tạo và tải tệp Excel ${entity}.xlsx...`, 'info');
+    API.downloadExport(entity, params);
+  },
+
+  // ==========================================
+  // ORDERS MANAGEMENT VIEW
+  // ==========================================
+  async renderOrdersView() {
+    const container = document.getElementById('view-orders');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div id="orders-summary-cards" class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom: 16px;">
+        <!-- Summary cards populated dynamically -->
+      </div>
+
+      <div class="card">
+        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; gap: 8px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="order-filter-q" class="form-control" style="max-width: 240px;" placeholder="Tìm theo mã đơn, khách, SĐT...">
+            <select id="order-filter-status" class="form-control" style="max-width: 150px;">
+              <option value="">Tất cả trạng thái</option>
+              <option value="completed">Đã hoàn tất</option>
+              <option value="pending">Đang chờ</option>
+              <option value="cancelled">Đã hủy</option>
+            </select>
+            <select id="order-filter-payment" class="form-control" style="max-width: 150px;">
+              <option value="">Tất cả hình thức</option>
+              <option value="cash">Tiền mặt</option>
+              <option value="bank">Chuyển khoản</option>
+              <option value="debt">Ghi nợ</option>
+            </select>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <input type="date" id="order-filter-from" class="form-control" style="max-width: 135px;" title="Từ ngày">
+              <span>-</span>
+              <input type="date" id="order-filter-to" class="form-control" style="max-width: 135px;" title="Đến ngày">
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="App.filterOrders(1)">Lọc</button>
+            <button class="btn btn-outline btn-sm" onclick="App.resetOrderFilters()">Đặt lại</button>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline btn-sm" onclick="App.openColumnSelector('orders')">Chọn cột</button>
+            <button class="btn btn-outline btn-sm" onclick="App.exportExcel('orders')">Xuất Excel</button>
+            <button class="btn btn-primary btn-sm" onclick="App.navigate('pos')">+ Bán hàng (POS)</button>
+          </div>
+        </div>
+
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="table">
+              <thead id="orders-table-head">
+                <!-- Dynamically configured headers -->
+              </thead>
+              <tbody id="orders-table-body">
+                <tr><td colspan="10" class="empty-state">Đang tải danh sách đơn bán hàng...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card-footer" id="orders-pagination" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 0.8125rem;">
+          <!-- Pagination populated dynamically -->
+        </div>
+      </div>
+    `;
+
+    document.getElementById('order-filter-q')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this.filterOrders(1);
+    });
+
+    this.filterOrders(1);
+  },
+
+  async filterOrders(page = 1) {
+    this.ordersPage = page;
+    const tbody = document.getElementById('orders-table-body');
+    const thead = document.getElementById('orders-table-head');
+    const summaryContainer = document.getElementById('orders-summary-cards');
+    const pagination = document.getElementById('orders-pagination');
+    if (!tbody) return;
+
+    tbody.innerHTML = `<tr><td colspan="10" class="empty-state">Đang tải dữ liệu...</td></tr>`;
+
+    const q = document.getElementById('order-filter-q')?.value.trim() || '';
+    const status = document.getElementById('order-filter-status')?.value || '';
+    const payment = document.getElementById('order-filter-payment')?.value || '';
+    const date_from = document.getElementById('order-filter-from')?.value || '';
+    const date_to = document.getElementById('order-filter-to')?.value || '';
+
+    const limit = this.ordersLimit || 15;
+    const offset = (page - 1) * limit;
+
+    const params = { limit, offset };
+    if (q) params.q = q;
+    if (status) params.status = status;
+    if (payment) params.payment_method = payment;
+    if (date_from) params.date_from = date_from;
+    if (date_to) params.date_to = date_to;
+
+    try {
+      const res = await API.getOrders(params);
+      const items = res.items || [];
+      const total = res.total || 0;
+      const summary = res.summary || {};
+
+      // Render summary cards
+      if (summaryContainer && summary.total_count !== undefined) {
+        summaryContainer.innerHTML = `
+          <div class="stat-card">
+            <div class="stat-title">Tổng đơn hàng</div>
+            <div class="stat-value">${summary.total_count.toLocaleString('vi-VN')}</div>
+            <div class="stat-sub">Tất cả giao dịch</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">Đã hoàn tất</div>
+            <div class="stat-value text-success">${summary.completed_count || 0}</div>
+            <div class="stat-sub">Doanh thu: <strong>${this.formatMoney(summary.completed_revenue || 0)}</strong></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">Đơn đang chờ</div>
+            <div class="stat-value text-amber">${summary.pending_count || 0}</div>
+            <div class="stat-sub">Tổng tiền: <strong>${this.formatMoney(summary.pending_amount || 0)}</strong></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">Đã hủy</div>
+            <div class="stat-value text-danger">${summary.cancelled_count || 0}</div>
+            <div class="stat-sub">Đã hoàn trả kho/quỹ</div>
+          </div>
+        `;
+      }
+
+      // Configure table headers
+      const visibleCols = this.getSavedColumns('orders');
+      const allCols = this.COLUMN_DEFS['orders'];
+      if (thead) {
+        thead.innerHTML = `
+          <tr>
+            ${allCols.filter(c => visibleCols.includes(c.key)).map(c => `<th>${c.label}</th>`).join('')}
+            <th class="text-right" style="min-width: 140px;">Thao tác</th>
+          </tr>
+        `;
+      }
+
+      if (items.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 1}" class="empty-state">Không tìm thấy đơn hàng nào phù hợp với bộ lọc</td></tr>`;
+        if (pagination) pagination.innerHTML = `<div>Tổng cộng: <strong>0</strong> đơn hàng</div>`;
+        return;
+      }
+
+      tbody.innerHTML = items.map(o => {
+        let statusBadge = '';
+        if (o.status === 'completed') {
+          statusBadge = '<span class="order-badge-completed">Hoàn tất</span>';
+        } else if (o.status === 'pending') {
+          statusBadge = '<span class="order-badge-pending">Đang chờ</span>';
+        } else if (o.status === 'cancelled') {
+          statusBadge = '<span class="order-badge-cancelled">Đã hủy</span>';
+        } else {
+          statusBadge = `<span class="badge-tag">${o.status}</span>`;
+        }
+
+        const pmText = { 'cash': 'Tiền mặt', 'bank': 'Chuyển khoản', 'debt': 'Ghi nợ' }[o.payment_method] || o.payment_method;
+
+        const cells = [];
+        if (visibleCols.includes('code')) {
+          cells.push(`<td><strong style="color: var(--color-primary); cursor: pointer;" onclick="App.renderOrderDetail(${o.id})">${o.code}</strong></td>`);
+        }
+        if (visibleCols.includes('created_at')) {
+          cells.push(`<td style="font-size: 0.8125rem; white-space: nowrap; color: var(--color-text-secondary);">${o.created_at}</td>`);
+        }
+        if (visibleCols.includes('customer_name')) {
+          cells.push(`<td><strong>${o.customer_name || 'Khách lẻ'}</strong>${o.customer_phone ? `<br><small style="color: var(--color-text-muted);">${o.customer_phone}</small>` : ''}</td>`);
+        }
+        if (visibleCols.includes('status')) {
+          cells.push(`<td>${statusBadge}</td>`);
+        }
+        if (visibleCols.includes('items_summary')) {
+          const summaryStr = o.items ? o.items.map(it => `${it.product_name} (${it.quantity} ${it.unit_name || ''})`).join(', ') : '---';
+          cells.push(`<td style="font-size: 0.8125rem; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${summaryStr}">${summaryStr}</td>`);
+        }
+        if (visibleCols.includes('total_amount')) {
+          cells.push(`<td class="text-right tabular-nums">${this.formatMoney(o.total_amount)}</td>`);
+        }
+        if (visibleCols.includes('discount')) {
+          cells.push(`<td class="text-right tabular-nums text-amber">${this.formatMoney(o.discount)}</td>`);
+        }
+        if (visibleCols.includes('final_amount')) {
+          cells.push(`<td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</td>`);
+        }
+        if (visibleCols.includes('actual_paid')) {
+          cells.push(`<td class="text-right tabular-nums">${this.formatMoney(o.actual_paid)}</td>`);
+        }
+        if (visibleCols.includes('debt_amount')) {
+          cells.push(`<td class="text-right tabular-nums" style="color: ${o.debt_amount > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)'}; font-weight: ${o.debt_amount > 0 ? '700' : 'normal'};">${this.formatMoney(o.debt_amount)}</td>`);
+        }
+        if (visibleCols.includes('payment_method')) {
+          cells.push(`<td><span class="badge-tag">${pmText}</span></td>`);
+        }
+        if (visibleCols.includes('notes')) {
+          cells.push(`<td style="font-size: 0.8125rem; color: var(--color-text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${o.notes || ''}">${o.notes || '---'}</td>`);
+        }
+
+        const canCancel = o.status !== 'cancelled' && this.hasPermission('orders:cancel');
+        const isPending = o.status === 'pending';
+
+        const actionBtns = `
+          <div style="display: flex; gap: 4px; justify-content: flex-end;">
+            <button class="btn btn-sm btn-outline" onclick="App.renderOrderDetail(${o.id})" title="Xem chi tiết">Chi tiết</button>
+            <button class="btn btn-sm btn-outline" onclick="App.duplicateOrderToPos(${o.id})" title="Nhân bản / Tải vào POS">Nhân bản</button>
+            ${isPending ? `<button class="btn btn-sm btn-success" onclick="App.promptCompleteOrder(${o.id})" title="Hoàn tất đơn hàng">Hoàn tất</button>` : ''}
+            ${canCancel ? `<button class="btn btn-sm btn-danger" onclick="App.openCancelOrderModal(${o.id}, '${o.code}')" title="Hủy đơn hàng">Hủy</button>` : ''}
+          </div>
+        `;
+
+        return `<tr>${cells.join('')}<td class="text-right">${actionBtns}</td></tr>`;
+      }).join('');
+
+      // Render pagination
+      const totalPages = Math.ceil(total / limit) || 1;
+      if (pagination) {
+        pagination.innerHTML = `
+          <div>Hiển thị ${offset + 1} - ${Math.min(offset + limit, total)} trên tổng <strong>${total}</strong> đơn hàng</div>
+          <div style="display: flex; gap: 4px;">
+            <button class="btn btn-sm btn-outline" ${page <= 1 ? 'disabled' : ''} onclick="App.filterOrders(${page - 1})">Trước</button>
+            <span style="padding: 4px 8px; font-weight: 600;">Trang ${page} / ${totalPages}</span>
+            <button class="btn btn-sm btn-outline" ${page >= totalPages ? 'disabled' : ''} onclick="App.filterOrders(${page + 1})">Sau</button>
+          </div>
+        `;
+      }
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="10" class="empty-state text-danger">Lỗi tải danh sách hóa đơn: ${err.message}</td></tr>`;
+    }
+  },
+
+  resetOrderFilters() {
+    const q = document.getElementById('order-filter-q');
+    const status = document.getElementById('order-filter-status');
+    const payment = document.getElementById('order-filter-payment');
+    const from = document.getElementById('order-filter-from');
+    const to = document.getElementById('order-filter-to');
+    if (q) q.value = '';
+    if (status) status.value = '';
+    if (payment) payment.value = '';
+    if (from) from.value = '';
+    if (to) to.value = '';
+    this.filterOrders(1);
+  },
+
+  async renderOrderDetail(orderId) {
+    const modal = document.getElementById('modal-order-detail');
+    const title = document.getElementById('od-title');
+    const subtitle = document.getElementById('od-subtitle');
+    const body = document.getElementById('od-body-content');
+    const footer = document.getElementById('od-footer-actions');
+    if (!modal || !body) return;
+
+    modal.classList.add('active');
+    body.innerHTML = '<div style="text-align: center; padding: 40px;">Đang tải chi tiết đơn hàng...</div>';
+
+    try {
+      const order = await API.getOrder(orderId);
+      if (!order) {
+        body.innerHTML = '<div class="text-danger">Không tìm thấy đơn hàng.</div>';
+        return;
+      }
+
+      let statusBadge = '';
+      if (order.status === 'completed') {
+        statusBadge = '<span class="order-badge-completed">Đã hoàn tất</span>';
+      } else if (order.status === 'pending') {
+        statusBadge = '<span class="order-badge-pending">Đơn hàng đang chờ</span>';
+      } else if (order.status === 'cancelled') {
+        statusBadge = '<span class="order-badge-cancelled">Đã hủy</span>';
+      }
+
+      if (title) title.innerHTML = `Chi tiết hóa đơn: <strong style="color: var(--color-primary);">${order.code}</strong> ${statusBadge}`;
+      if (subtitle) subtitle.textContent = `Ngày tạo: ${order.created_at} | Nhân viên: ${order.user_name || 'Hệ thống'}`;
+
+      const pmMap = { 'cash': 'Tiền mặt', 'bank': 'Chuyển khoản', 'debt': 'Ghi nợ' };
+      const pmLabel = pmMap[order.payment_method] || order.payment_method;
+
+      const itemsHtml = (order.items || []).map((it, idx) => `
+        <tr>
+          <td>${idx + 1}</td>
+          <td>
+            <strong>${it.product_name}</strong>
+            ${it.conversion_rate && it.conversion_rate > 1 ? `<br><small style="color: var(--color-text-muted);">Quy đổi: 1 ${it.unit_name} = ${it.conversion_rate} đv cơ sở</small>` : ''}
+          </td>
+          <td><span class="unit-tag-pill">${it.unit_name || 'Cái'}</span></td>
+          <td class="text-right font-bold">${it.quantity}</td>
+          <td class="text-right tabular-nums">${this.formatMoney(it.unit_price)}</td>
+          <td class="text-right tabular-nums font-bold">${this.formatMoney(it.total_price)}</td>
+        </tr>
+      `).join('');
+
+      body.innerHTML = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; background: var(--color-bg-alt); padding: 12px 16px; border-radius: 6px; font-size: 0.84rem;">
+          <div>
+            <div><strong>Khách hàng:</strong> ${order.customer_name || 'Khách lẻ'}</div>
+            <div><strong>Số điện thoại:</strong> ${order.customer_phone || '---'}</div>
+            <div><strong>Địa chỉ:</strong> ${order.customer_address || '---'}</div>
+          </div>
+          <div>
+            <div><strong>Hình thức thanh toán:</strong> <span class="badge-tag">${pmLabel}</span></div>
+            <div><strong>Trạng thái:</strong> ${statusBadge}</div>
+            <div><strong>Ghi chú:</strong> <em style="color: var(--color-text-secondary);">${order.notes || 'Không có ghi chú'}</em></div>
+          </div>
+        </div>
+
+        ${order.status === 'cancelled' ? `
+          <div class="alert alert-warning" style="margin-bottom: 16px; font-size: 0.84rem;">
+            <strong>Đơn hàng đã bị hủy</strong> lúc <em>${order.cancelled_at || ''}</em>.<br>
+            <strong>Lý do:</strong> ${order.cancel_reason || 'Không rõ lý do'}.<br>
+            Toàn bộ tồn kho, quỹ tiền và công nợ liên quan đã được tự động hoàn trả an toàn.
+          </div>
+        ` : ''}
+
+        ${order.status === 'pending' ? `
+          <div class="alert alert-info" style="margin-bottom: 16px; font-size: 0.84rem;">
+            <strong>Đơn hàng đang chờ xử lý.</strong> Tồn kho chưa bị trừ và doanh thu/công nợ chưa được ghi nhận vào sổ sách chính thức.
+          </div>
+        ` : ''}
+
+        <div class="table-responsive" style="margin-bottom: 16px;">
+          <table class="table" style="font-size: 0.84rem;">
+            <thead>
+              <tr>
+                <th style="width: 40px;">STT</th>
+                <th>Sản phẩm / Hàng hóa</th>
+                <th>Đơn vị tính</th>
+                <th class="text-right">Số lượng</th>
+                <th class="text-right">Đơn giá</th>
+                <th class="text-right">Thành tiền</th>
+              </tr>
+            </thead>
+            <tbody>${itemsHtml}</tbody>
+          </table>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end;">
+          <div style="min-width: 280px; font-size: 0.875rem; line-height: 1.8;">
+            <div style="display: flex; justify-content: space-between;">
+              <span>Tổng tiền hàng:</span>
+              <span class="tabular-nums font-bold">${this.formatMoney(order.total_amount)}</span>
+            </div>
+            ${order.discount > 0 ? `
+              <div style="display: flex; justify-content: space-between; color: var(--color-warning-text);">
+                <span>Giảm giá / Khuyến mãi ${order.promotion_code ? `(${order.promotion_code})` : ''}:</span>
+                <span class="tabular-nums font-bold">-${this.formatMoney(order.discount)}</span>
+              </div>
+            ` : ''}
+            ${order.vat_amount > 0 ? `
+              <div style="display: flex; justify-content: space-between;">
+                <span>Thuế VAT:</span>
+                <span class="tabular-nums">${this.formatMoney(order.vat_amount)}</span>
+              </div>
+            ` : ''}
+            <div style="display: flex; justify-content: space-between; border-top: 1px dashed var(--color-border); padding-top: 4px; font-size: 1rem; color: var(--color-primary);">
+              <strong>Khách cần trả:</strong>
+              <strong class="tabular-nums">${this.formatMoney(order.final_amount)}</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span>Khách đã trả:</span>
+              <span class="tabular-nums font-bold">${this.formatMoney(order.actual_paid)}</span>
+            </div>
+            ${order.change_amount > 0 ? `
+              <div style="display: flex; justify-content: space-between; color: var(--color-success-text);">
+                <span>Tiền thừa trả khách:</span>
+                <span class="tabular-nums">${this.formatMoney(order.change_amount)}</span>
+              </div>
+            ` : ''}
+            ${order.debt_amount > 0 ? `
+              <div style="display: flex; justify-content: space-between; color: var(--color-danger-text);">
+                <strong>Ghi nợ đơn hàng:</strong>
+                <strong class="tabular-nums">${this.formatMoney(order.debt_amount)}</strong>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `;
+
+      if (footer) {
+        footer.innerHTML = `
+          <div style="display: flex; gap: 8px; justify-content: space-between; width: 100%;">
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-outline" onclick="App.viewEntityTimeline('order', '${order.code}')">Xem Timeline</button>
+              <button class="btn btn-outline" onclick="App.duplicateOrderToPos(${order.id})">Nhân bản đơn</button>
+              <button class="btn btn-outline" onclick="POS.reprintReceipt(${JSON.stringify(order).replace(/"/g, '&quot;')})">In hóa đơn</button>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              ${isPending ? `<button class="btn btn-success" onclick="App.promptCompleteOrder(${order.id})">Hoàn tất đơn hàng</button>` : ''}
+              ${canCancel ? `<button class="btn btn-danger" onclick="App.openCancelOrderModal(${order.id}, '${order.code}')">Hủy đơn</button>` : ''}
+              <button class="btn btn-outline" data-close-modal="modal-order-detail">Đóng</button>
+            </div>
+          </div>
+        `;
+      }
+    } catch (err) {
+      body.innerHTML = `<div class="text-danger">Lỗi tải chi tiết đơn hàng: ${err.message}</div>`;
+    }
+  },
+
+  openCancelOrderModal(orderId, orderCode) {
+    document.getElementById('cancel-order-code').textContent = orderCode;
+    document.getElementById('cancel-order-code').dataset.orderId = orderId;
+    const reasonElem = document.getElementById('cancel-order-reason');
+    if (reasonElem) reasonElem.value = '';
+    const modal = document.getElementById('modal-order-cancel');
+    if (modal) modal.classList.add('active');
+  },
+
+  async confirmCancelOrder() {
+    const codeElem = document.getElementById('cancel-order-code');
+    const orderId = codeElem?.dataset?.orderId;
+    const orderCode = codeElem?.textContent;
+    const reason = document.getElementById('cancel-order-reason')?.value.trim();
+
+    if (!reason) {
+      this.toast('Vui lòng nhập lý do hủy đơn hàng', 'warning');
+      return;
+    }
+
+    try {
+      await API.cancelOrder(orderId, { reason });
+      this.toast(`Đã hủy đơn hàng ${orderCode} thành công! Kho, tiền quỹ và công nợ đã được hoàn trả.`, 'success');
+      const modalCancel = document.getElementById('modal-order-cancel');
+      if (modalCancel) modalCancel.classList.remove('active');
+      const modalDetail = document.getElementById('modal-order-detail');
+      if (modalDetail) modalDetail.classList.remove('active');
+      this.refreshCurrentView();
+      this.loadTopFundSummary();
+    } catch (err) {
+      this.toast('Lỗi hủy đơn hàng: ' + err.message, 'error');
+    }
+  },
+
+  async promptCompleteOrder(orderId) {
+    if (!confirm('Xác nhận hoàn tất đơn hàng đang chờ này? Tồn kho sẽ được trừ và ghi nhận doanh thu.')) return;
+    try {
+      await API.completeOrder(orderId);
+      this.toast('Đơn hàng đã được chuyển sang trạng thái Hoàn tất!', 'success');
+      const modalDetail = document.getElementById('modal-order-detail');
+      if (modalDetail) modalDetail.classList.remove('active');
+      const modalPending = document.getElementById('modal-customer-pending');
+      if (modalPending) modalPending.classList.remove('active');
+      this.refreshCurrentView();
+      this.loadTopFundSummary();
+    } catch (err) {
+      this.toast('Lỗi hoàn tất đơn hàng: ' + err.message, 'error');
+    }
+  },
+
+  async duplicateOrderToPos(orderId) {
+    try {
+      const modalDetail = document.getElementById('modal-order-detail');
+      if (modalDetail) modalDetail.classList.remove('active');
+      const modalPending = document.getElementById('modal-customer-pending');
+      if (modalPending) modalPending.classList.remove('active');
+
+      this.navigate('pos');
+      await POS.loadFromOrder(orderId);
+      this.toast('Đã sao chép đơn hàng vào giỏ bán POS!', 'success');
+    } catch (err) {
+      this.toast('Lỗi sao chép đơn: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // PROMOTIONS MANAGEMENT VIEW
+  // ==========================================
+  async renderPromotionsView() {
+    const container = document.getElementById('view-promotions');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
+            <h4 style="margin: 0; font-size: 1rem; font-weight: 600;">Chương trình khuyến mãi & Chiết khấu</h4>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline" onclick="App.exportExcel('promotions')">Xuất Excel</button>
+            <button class="btn btn-primary" onclick="App.openCreatePromotionModal()">+ Tạo khuyến mãi mới</button>
+          </div>
+        </div>
+
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Mã KM</th>
+                  <th>Tên chương trình</th>
+                  <th>Phạm vi</th>
+                  <th>Đối tượng áp dụng</th>
+                  <th>Loại giảm</th>
+                  <th class="text-right">Giá trị</th>
+                  <th class="text-right">Đơn tối thiểu</th>
+                  <th>Thời gian áp dụng</th>
+                  <th class="text-center">Trạng thái</th>
+                  <th class="text-right">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="promotions-table-body">
+                <tr><td colspan="10" class="empty-state">Đang tải danh sách khuyến mãi...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.loadPromotionsTable();
+  },
+
+  async loadPromotionsTable() {
+    const tbody = document.getElementById('promotions-table-body');
+    if (!tbody) return;
+
+    try {
+      const promos = await API.getPromotions();
+      if (promos.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-state">Chưa có chương trình khuyến mãi nào được tạo.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = promos.map(p => {
+        const scopeMap = { 'order': 'Toàn đơn hàng', 'category': 'Theo danh mục', 'product': 'Theo sản phẩm' };
+        const typeMap = { 'percent': 'Theo phần trăm (%)', 'fixed': 'Số tiền cố định' };
+        const valStr = p.discount_type === 'percent' ? `${p.discount_value}%` : this.formatMoney(p.discount_value);
+
+        return `
+          <tr>
+            <td><strong style="color: var(--color-primary);">${p.code}</strong></td>
+            <td><strong>${p.name}</strong></td>
+            <td><span class="badge-tag badge-blue">${scopeMap[p.scope] || p.scope}</span></td>
+            <td>${p.scope_target || 'Tất cả'}</td>
+            <td>${typeMap[p.discount_type] || p.discount_type}</td>
+            <td class="text-right font-bold tabular-nums" style="color: var(--color-primary);">${valStr}</td>
+            <td class="text-right tabular-nums">${this.formatMoney(p.min_order_amount)}</td>
+            <td style="font-size: 0.8125rem; white-space: nowrap;">${p.start_date} <br>đến ${p.end_date}</td>
+            <td class="text-center">
+              <span class="badge-tag ${p.is_active ? 'badge-green' : 'badge-red'}" style="cursor: pointer;" onclick="App.togglePromotionActive(${p.id}, ${!p.is_active})">
+                ${p.is_active ? 'Đang chạy' : 'Tạm dừng'}
+              </span>
+            </td>
+            <td class="text-right">
+              <button class="btn btn-sm btn-outline" onclick="App.openEditPromotionModal(${p.id})">Sửa</button>
+              <button class="btn btn-sm btn-danger" onclick="App.deletePromotion(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Xóa</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="10" class="empty-state text-danger">Lỗi tải khuyến mãi: ${err.message}</td></tr>`;
+    }
+  },
+
+  async openCreatePromotionModal() {
+    const modal = document.getElementById('modal-promotion');
+    document.getElementById('promo-modal-title').textContent = 'Tạo chương trình khuyến mãi';
+    document.getElementById('promo-id').value = '';
+    document.getElementById('promo-name').value = '';
+    
+    // Default dates
+    const now = new Date();
+    const future = new Date(now.getTime() + 30 * 24 * 3600 * 1000);
+    document.getElementById('promo-start').value = now.toISOString().split('T')[0];
+    document.getElementById('promo-end').value = future.toISOString().split('T')[0];
+
+    document.getElementById('promo-scope').value = 'order';
+    document.getElementById('promo-type').value = 'percent';
+    document.getElementById('promo-value').value = '5';
+    document.getElementById('promo-min-amount').value = '0';
+    document.getElementById('promo-is-active').checked = true;
+
+    await this.onPromoScopeChange();
+    modal.classList.add('active');
+  },
+
+  async openEditPromotionModal(id) {
+    try {
+      const promo = await API.getPromotion(id);
+      if (!promo) return;
+
+      const modal = document.getElementById('modal-promotion');
+      document.getElementById('promo-modal-title').textContent = 'Chỉnh sửa khuyến mãi: ' + promo.name;
+      document.getElementById('promo-id').value = promo.id;
+      document.getElementById('promo-name').value = promo.name;
+      document.getElementById('promo-start').value = promo.start_date || '';
+      document.getElementById('promo-end').value = promo.end_date || '';
+      document.getElementById('promo-scope').value = promo.scope || 'order';
+      document.getElementById('promo-type').value = promo.discount_type || 'percent';
+      document.getElementById('promo-value').value = promo.discount_value || '0';
+      document.getElementById('promo-min-amount').value = promo.min_order_amount || '0';
+      document.getElementById('promo-customer-group').value = promo.customer_group || '';
+      document.getElementById('promo-is-active').checked = Boolean(promo.is_active);
+
+      await this.onPromoScopeChange(promo.scope_target);
+      modal.classList.add('active');
+    } catch (err) {
+      this.toast('Lỗi tải thông tin khuyến mãi: ' + err.message, 'error');
+    }
+  },
+
+  async onPromoScopeChange(currentTargetVal = '') {
+    const scope = document.getElementById('promo-scope')?.value || 'order';
+    const targetGrp = document.getElementById('promo-scope-target-grp');
+    const targetLbl = document.getElementById('promo-scope-target-lbl');
+    const targetContainer = document.getElementById('promo-scope-target-container');
+    if (!targetGrp || !targetContainer) return;
+
+    if (scope === 'order') {
+      targetGrp.style.display = 'none';
+      targetContainer.innerHTML = '';
+      return;
+    }
+
+    targetGrp.style.display = 'block';
+    if (scope === 'category') {
+      targetLbl.textContent = 'Danh mục áp dụng:';
+      try {
+        const cats = await API.getCategories();
+        targetContainer.innerHTML = `
+          <select id="promo-scope-target-select" class="form-control">
+            ${cats.map(c => `<option value="${c}" ${c === currentTargetVal ? 'selected' : ''}>${c}</option>`).join('')}
+          </select>
+        `;
+      } catch (e) {
+        targetContainer.innerHTML = '<input type="text" id="promo-scope-target-select" class="form-control" placeholder="Tên danh mục">';
+      }
+    } else if (scope === 'product') {
+      targetLbl.textContent = 'Sản phẩm áp dụng:';
+      try {
+        const prods = await API.getProducts();
+        targetContainer.innerHTML = `
+          <select id="promo-scope-target-select" class="form-control">
+            ${prods.map(p => `<option value="${p.id}" ${String(p.id) === String(currentTargetVal) ? 'selected' : ''}>${p.code} - ${p.name}</option>`).join('')}
+          </select>
+        `;
+      } catch (e) {
+        targetContainer.innerHTML = '<input type="text" id="promo-scope-target-select" class="form-control" placeholder="Mã hoặc ID sản phẩm">';
+      }
+    }
+  },
+
+  async savePromotion(e) {
+    if (e) e.preventDefault();
+    const id = document.getElementById('promo-id')?.value;
+    const name = document.getElementById('promo-name')?.value.trim();
+    const start_date = document.getElementById('promo-start')?.value;
+    const end_date = document.getElementById('promo-end')?.value;
+    const scope = document.getElementById('promo-scope')?.value;
+    const discount_type = document.getElementById('promo-type')?.value;
+    const discount_value = parseFloat(document.getElementById('promo-value')?.value || '0');
+    const min_order_amount = parseFloat(document.getElementById('promo-min-amount')?.value || '0');
+    const customer_group = document.getElementById('promo-customer-group')?.value || null;
+    const is_active = document.getElementById('promo-is-active')?.checked ? 1 : 0;
+
+    let scope_target = null;
+    if (scope !== 'order') {
+      scope_target = document.getElementById('promo-scope-target-select')?.value || null;
+    }
+
+    if (!name) {
+      this.toast('Vui lòng nhập tên chương trình khuyến mãi', 'warning');
+      return;
+    }
+    if (discount_value <= 0) {
+      this.toast('Giá trị giảm phải lớn hơn 0', 'warning');
+      return;
+    }
+    if (discount_type === 'percent' && discount_value > 100) {
+      this.toast('Chiết khấu phần trăm không được vượt quá 100%', 'warning');
+      return;
+    }
+
+    const payload = {
+      name,
+      start_date,
+      end_date,
+      scope,
+      scope_target,
+      discount_type,
+      discount_value,
+      min_order_amount,
+      customer_group,
+      is_active
+    };
+
+    try {
+      if (id) {
+        await API.updatePromotion(id, payload);
+        this.toast('Cập nhật khuyến mãi thành công!', 'success');
+      } else {
+        await API.createPromotion(payload);
+        this.toast('Tạo chương trình khuyến mãi thành công!', 'success');
+      }
+      const modal = document.getElementById('modal-promotion');
+      if (modal) modal.classList.remove('active');
+      this.loadPromotionsTable();
+    } catch (err) {
+      this.toast('Lỗi lưu khuyến mãi: ' + err.message, 'error');
+    }
+  },
+
+  async togglePromotionActive(id, newStatus) {
+    try {
+      await API.updatePromotion(id, { is_active: newStatus ? 1 : 0 });
+      this.toast(`Đã ${newStatus ? 'kích hoạt' : 'tạm dừng'} khuyến mãi!`, 'success');
+      this.loadPromotionsTable();
+    } catch (err) {
+      this.toast('Lỗi cập nhật: ' + err.message, 'error');
+    }
+  },
+
+  async deletePromotion(id, name) {
+    if (!confirm(`Xác nhận xóa chương trình khuyến mãi: "${name}"?`)) return;
+    try {
+      await API.deletePromotion(id);
+      this.toast('Đã xóa khuyến mãi thành công!', 'success');
+      this.loadPromotionsTable();
+    } catch (err) {
+      this.toast('Lỗi xóa khuyến mãi: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // MULTI-LEVEL PACKAGING UNITS MODAL
+  // ==========================================
+  async openProductUnitsModal(productId) {
+    const modal = document.getElementById('modal-product-units');
+    const title = document.getElementById('pu-modal-title');
+    const subtitle = document.getElementById('pu-modal-subtitle');
+    const tbody = document.getElementById('pu-table-body');
+    const hiddenPid = document.getElementById('pu-product-id');
+    const hiddenUid = document.getElementById('pu-unit-id');
+    const formTitle = document.getElementById('pu-form-title');
+
+    if (!modal) return;
+    hiddenPid.value = productId;
+    hiddenUid.value = '';
+    formTitle.textContent = 'Thêm đơn vị đóng gói mới';
+
+    // Clear form inputs
+    document.getElementById('pu-name').value = '';
+    document.getElementById('pu-rate').value = '';
+    document.getElementById('pu-price').value = '';
+    document.getElementById('pu-barcode').value = '';
+
+    modal.classList.add('active');
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Đang tải danh sách đơn vị quy đổi...</td></tr>';
+
+    try {
+      const units = await API.getProductUnits(productId);
+      const baseUnit = units.find(u => u.is_base);
+      const baseUnitName = baseUnit ? baseUnit.name : 'đv cơ sở';
+
+      if (subtitle) {
+        subtitle.textContent = `Đơn vị cơ sở: [${baseUnitName}] | Quy đổi các cấp đóng gói/bán buôn lớn hơn`;
+      }
+
+      tbody.innerHTML = units.map(u => {
+        const isBase = Boolean(u.is_base);
+        return `
+          <tr>
+            <td><strong>${u.name}</strong></td>
+            <td>
+              ${isBase ? `<span class="badge-tag badge-purple">1 (Đơn vị cơ sở)</span>` : `1 ${u.name} = <strong>${u.conversion_rate}</strong> ${baseUnitName}`}
+            </td>
+            <td class="text-right tabular-nums">
+              ${u.sale_price !== null && u.sale_price !== undefined ? this.formatMoney(u.sale_price) : '<span style="color: var(--color-text-muted); font-size: 0.8rem;">Tự động tính theo tỷ lệ</span>'}
+            </td>
+            <td style="font-family: var(--font-mono); font-size: 0.8125rem;">${u.barcode || '---'}</td>
+            <td>
+              <span class="badge-tag ${isBase ? 'badge-purple' : 'badge-blue'}">${isBase ? 'Cơ sở' : 'Đóng gói'}</span>
+            </td>
+            <td class="text-right">
+              ${isBase ? '<span style="color: var(--color-text-disabled); font-size: 0.8rem;">Mặc định</span>' : `
+                <button class="btn btn-sm btn-outline" onclick="App.editProductUnitRow(${JSON.stringify(u).replace(/"/g, '&quot;')})">Sửa</button>
+                <button class="btn btn-sm btn-danger" onclick="App.deleteProductUnit(${u.id}, ${productId})">Xóa</button>
+              `}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="6" class="empty-state text-danger">Lỗi tải đơn vị tính: ${err.message}</td></tr>`;
+    }
+  },
+
+  editProductUnitRow(u) {
+    document.getElementById('pu-unit-id').value = u.id;
+    document.getElementById('pu-form-title').textContent = 'Chỉnh sửa đơn vị: ' + u.name;
+    document.getElementById('pu-name').value = u.name;
+    document.getElementById('pu-rate').value = u.conversion_rate;
+    document.getElementById('pu-price').value = u.sale_price !== null && u.sale_price !== undefined ? u.sale_price : '';
+    document.getElementById('pu-barcode').value = u.barcode || '';
+  },
+
+  async saveProductUnit(e) {
+    if (e) e.preventDefault();
+    const productId = document.getElementById('pu-product-id').value;
+    const unitId = document.getElementById('pu-unit-id').value;
+    const name = document.getElementById('pu-name').value.trim();
+    const rate = parseFloat(document.getElementById('pu-rate').value);
+    const priceInput = document.getElementById('pu-price').value.trim();
+    const sale_price = priceInput !== '' ? parseFloat(priceInput) : null;
+    const barcode = document.getElementById('pu-barcode').value.trim() || null;
+
+    if (!name) {
+      this.toast('Vui lòng nhập tên đơn vị tính', 'warning');
+      return;
+    }
+    if (isNaN(rate) || rate <= 0) {
+      this.toast('Hệ số quy đổi phải lớn hơn 0', 'warning');
+      return;
+    }
+
+    const payload = {
+      name,
+      conversion_rate: rate,
+      sale_price,
+      barcode
+    };
+
+    try {
+      if (unitId) {
+        await API.updateProductUnit(unitId, payload);
+        this.toast('Đã cập nhật đơn vị quy đổi!', 'success');
+      } else {
+        await API.saveProductUnit(productId, payload);
+        this.toast('Đã thêm đơn vị quy đổi mới!', 'success');
+      }
+      this.openProductUnitsModal(productId);
+      this.loadProductsTable();
+    } catch (err) {
+      this.toast('Lỗi lưu đơn vị tính: ' + err.message, 'error');
+    }
+  },
+
+  async deleteProductUnit(unitId, productId) {
+    if (!confirm('Xác nhận xóa đơn vị quy đổi này?')) return;
+    try {
+      await API.deleteProductUnit(unitId);
+      this.toast('Đã xóa đơn vị quy đổi thành công!', 'success');
+      this.openProductUnitsModal(productId);
+      this.loadProductsTable();
+    } catch (err) {
+      this.toast('Lỗi xóa đơn vị: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // CUSTOMER PENDING ORDERS MODAL
+  // ==========================================
+  async viewCustomerPendingOrders(customerId, customerName) {
+    const modal = document.getElementById('modal-customer-pending');
+    const title = document.getElementById('cust-pending-title');
+    const subtitle = document.getElementById('cust-pending-subtitle');
+    const container = document.getElementById('cust-pending-list-container');
+    if (!modal || !container) return;
+
+    if (title) title.textContent = `Đơn hàng đang chờ: ${customerName}`;
+    if (subtitle) subtitle.textContent = 'Danh sách các đơn đặt hàng chưa hoàn tất hoặc giao dịch chưa chốt';
+    container.innerHTML = '<div style="text-align: center; padding: 30px;">Đang tải đơn đặt hàng...</div>';
+    modal.classList.add('active');
+
+    try {
+      const orders = await API.getCustomerPendingOrders(customerId);
+      if (orders.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state" style="padding: 40px 10px;">
+            <div style="font-weight: 600; margin-bottom: 4px;">Khách hàng hiện không có đơn hàng nào đang chờ</div>
+            <div style="font-size: 0.8125rem; color: var(--color-text-muted);">Tất cả các đơn đã được hoàn tất hoặc đã hủy</div>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = orders.map(o => {
+        const itemsStr = o.items ? o.items.map(it => `${it.product_name} (${it.quantity} ${it.unit_name || ''})`).join(', ') : '---';
+        return `
+          <div style="background: var(--color-bg-alt); border: 1px solid var(--color-border); border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <div>
+                <strong style="color: var(--color-primary); font-size: 0.95rem;">${o.code}</strong>
+                <span style="font-size: 0.8125rem; color: var(--color-text-muted); margin-left: 8px;">${o.created_at}</span>
+              </div>
+              <span class="order-badge-pending">Đang chờ</span>
+            </div>
+            <div style="font-size: 0.84rem; margin-bottom: 6px;">
+              <strong>Mặt hàng:</strong> ${itemsStr}
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.875rem;">
+              <div>
+                Tổng tiền: <strong class="tabular-nums" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</strong>
+                ${o.notes ? `<span style="font-size: 0.8125rem; color: var(--color-text-muted); margin-left: 10px;">(Ghi chú: ${o.notes})</span>` : ''}
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn btn-sm btn-outline" onclick="App.renderOrderDetail(${o.id})">Chi tiết</button>
+                <button class="btn btn-sm btn-outline" onclick="App.duplicateOrderToPos(${o.id})">Tải vào POS</button>
+                <button class="btn btn-sm btn-success" onclick="App.promptCompleteOrder(${o.id})">Hoàn tất</button>
+                <button class="btn btn-sm btn-danger" onclick="App.openCancelOrderModal(${o.id}, '${o.code}')">Hủy</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      container.innerHTML = `<div class="text-danger" style="padding: 20px;">Lỗi tải đơn hàng: ${err.message}</div>`;
+    }
   }
 };
 
