@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Frontend Comprehensive Automated Test Suite</title>
+  <link rel="stylesheet" href="../frontend/css/style.css">
+</head>
+<body>
+  <!-- Realistic DOM matching frontend/index.html -->
+  <div id="toast-container"></div>
+
+  <!-- Sidebar Navigation -->
+  <aside id="app-sidebar" class="sidebar">
+    <nav class="sidebar-nav">
+      <a class="menu-item active" data-view="dashboard"><span>Tổng quan</span></a>
+      <a class="menu-item" data-view="pos"><span>Bán hàng (POS)</span></a>
+      <a class="menu-item" data-view="orders"><span>Hóa đơn & Đơn hàng</span></a>
+      <a class="menu-item" data-view="returns"><span>Khách trả hàng</span></a>
+      <a class="menu-item" data-view="promotions"><span>Khuyến mãi</span></a>
+      <a class="menu-item" data-view="products"><span>Hàng hóa & Kho</span></a>
+      <a class="menu-item" data-view="purchases"><span>Nhập hàng (NCC)</span></a>
+      <a class="menu-item" data-view="customers"><span>Khách & Giá riêng</span></a>
+      <a class="menu-item" data-view="suppliers"><span>Nhà cung cấp</span></a>
+      <a class="menu-item" data-view="cash-flow"><span>Sổ quỹ & Dòng tiền</span></a>
+      <a class="menu-item" data-view="reports"><span>Báo cáo doanh thu</span></a>
+      <a class="menu-item" data-view="audit"><span>Nhật ký kiểm toán</span></a>
+      <a class="menu-item" data-view="users"><span>Nhân viên & Phân quyền</span></a>
+      <a class="menu-item" data-view="settings"><span>Cài đặt & Sao lưu</span></a>
+    </nav>
+  </aside>
+  <div id="sidebar-overlay" class="sidebar-overlay"></div>
+  <button id="btn-toggle-sidebar"></button>
+
+  <!-- Topbar elements -->
+  <div id="page-title-text">Tổng quan kinh doanh</div>
+  <div id="top-fund-balance">0 đ</div>
+  <button id="btn-quick-pos" style="display: none;"></button>
+  <div id="top-fund-container" style="display: none;"></div>
+
+  <!-- Topbar User Badge Area -->
+  <div class="user-profile-badge" id="topbar-user-badge">
+    <div class="user-avatar" id="user-avatar-initials">AD</div>
+    <div>
+      <div id="user-display-name">Người dùng</div>
+      <div id="user-role-badge"><span class="badge badge-blue">Đang tải...</span></div>
+    </div>
+  </div>
+
+  <!-- View Sections -->
+  <main class="app-main">
+    <section id="view-dashboard" class="view-section"></section>
+    <section id="view-pos" class="view-section" style="display: none;">
+      <select id="pos-customer-select"><option value="">Khách lẻ</option></select>
+      <input type="text" id="pos-product-search" placeholder="Tìm hàng...">
+      <select id="pos-promo-select"><option value="">-- Chọn khuyến mãi --</option></select>
+      <input type="number" id="pos-discount-input" value="0">
+      <select id="pos-vat-select"><option value="0">0%</option><option value="8">8%</option><option value="10">10%</option></select>
+      <input type="number" id="pos-paid-input" value="0">
+      <div id="pos-cart-items"></div>
+      <div id="pos-subtotal-amount">0 đ</div>
+      <div id="pos-vat-amount">0 đ</div>
+      <div id="pos-final-amount">0 đ</div>
+      <div id="pos-balance-amount">0 đ</div>
+      <div id="pos-promo-banner" style="display: none;">
+        <span id="pos-promo-banner-name"></span>
+        <span id="pos-promo-banner-discount"></span>
+      </div>
+    </section>
+    <section id="view-orders" class="view-section" style="display: none;"></section>
+    <section id="view-returns" class="view-section" style="display: none;"></section>
+    <section id="view-promotions" class="view-section" style="display: none;"></section>
+    <section id="view-products" class="view-section" style="display: none;"></section>
+    <section id="view-purchases" class="view-section" style="display: none;"></section>
+    <section id="view-customers" class="view-section" style="display: none;"></section>
+    <section id="view-suppliers" class="view-section" style="display: none;"></section>
+    <section id="view-cash-flow" class="view-section" style="display: none;"></section>
+    <section id="view-reports" class="view-section" style="display: none;"></section>
+    <section id="view-audit" class="view-section" style="display: none;"></section>
+    <section id="view-users" class="view-section" style="display: none;"></section>
+    <section id="view-settings" class="view-section" style="display: none;"></section>
+  </main>
+
+  <!-- Modals -->
+  <div class="modal-overlay" id="auth-modal" style="z-index: 99999;">
+    <div class="modal-dialog">
+      <div id="auth-bootstrap-container" style="display: none;"></div>
+      <div id="auth-login-container"></div>
+      <div id="bs-token-group" style="display: none;">
+        <input type="password" id="bs-bootstrap-token">
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="product-modal">
+    <div class="modal-dialog">
+      <h3 class="modal-title" id="product-modal-title">Thêm hàng hóa</h3>
+      <button class="modal-close" data-close-modal="product-modal">✕</button>
+      <input type="hidden" id="prod-id">
+      <input type="hidden" id="prod-sub-unit">
+      <input type="hidden" id="prod-sub-unit-ratio" value="1">
+      <input type="text" id="prod-code">
+      <input type="text" id="prod-name">
+      <input type="text" id="prod-barcode">
+      <input type="text" id="prod-category">
+      <input type="text" id="prod-unit" value="Cái">
+      <input type="number" id="prod-cost-price" value="0">
+      <input type="number" id="prod-sale-price" value="0">
+      <input type="number" id="prod-stock" value="0">
+      <input type="number" id="prod-min-stock" value="5">
+      <div id="prod-unit-rows"></div>
+      <table><tbody id="product-units-tbody"></tbody></table>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="customer-modal">
+    <div class="modal-dialog">
+      <button class="modal-close" data-close-modal="customer-modal">✕</button>
+      <input type="text" id="cust-code">
+      <input type="text" id="cust-name">
+      <input type="text" id="cust-phone">
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="sample-dialog-modal">
+    <div class="modal-dialog">
+      <button class="modal-close" data-close-modal="sample-dialog-modal">✕</button>
+      <p>Sample dialog</p>
+    </div>
+  </div>
+
+  <!-- Test Results Indicator -->
+  <div id="test-results">RUNNING</div>
+
+  <script src="../frontend/js/api.js"></script>
+  <script src="../frontend/js/pos.js"></script>
+  <script src="../frontend/js/app.js"></script>
+
+  <script>
+    const results = [];
+    function assert(cond, name, details = '') {
+      if (cond) {
+        results.push({ name, pass: true });
+      } else {
+        results.push({ name, pass: false, error: details || 'Assertion failed' });
+        console.error('FAIL:', name, details);
+      }
+    }
+
+    (async function runFrontendTests() {
+    try {
+      // ========================================================
+      // TEST SUITE 1: Script Loading and Object Definitions
+      // ========================================================
+      assert(typeof API === 'object' && API !== null, 'T1.1: API object is defined');
+      assert(typeof POS === 'object' && POS !== null, 'T1.2: POS object is defined');
+      assert(typeof App === 'object' && App !== null, 'T1.3: App object is defined');
+
+      // Essential methods
+      const requiredMethods = [
+        'init', 'setupNavigation', 'setupModals', 'navigate', 'refreshCurrentView',
+        'updateUserUI', 'showAuthModal', 'hideAuthModal', 'applyRolePermissions',
+        'hasPermission', 'formatMoney', 'matchesSearch', 'removeVietnameseTones',
+        'renderAccessDenied', 'logout', 'normalizeOrders'
+      ];
+      for (const m of requiredMethods) {
+        assert(typeof App[m] === 'function', `T1.4: App.${m} is a callable function`);
+      }
+
+      // ========================================================
+      // TEST SUITE 2: String, Number and Search Utilities
+      // ========================================================
+      assert(App.formatMoney(250000) === '250.000 đ', 'T2.1: formatMoney with symbol');
+      assert(App.formatMoney(250000, false) === '250.000', 'T2.2: formatMoney without symbol');
+      assert(App.formatMoney(0) === '0 đ', 'T2.3: formatMoney handles zero');
+      assert(App.formatMoney(null) === '0 đ', 'T2.4: formatMoney handles null');
+      assert(App.formatMoney(undefined) === '0 đ', 'T2.5: formatMoney handles undefined');
+      assert(App.formatMoney(-50000) === '-50.000 đ', 'T2.6: formatMoney handles negative numbers');
+
+      assert(App.removeVietnameseTones('Hóa đơn bán hàng KiotPro') === 'hoa don ban hang kiotpro', 'T2.7: removeVietnameseTones accents');
+      assert(App.removeVietnameseTones('Đồng Đỏ Điên Điển') === 'dong do dien dien', 'T2.8: removeVietnameseTones đ/Đ');
+      assert(App.removeVietnameseTones('') === '', 'T2.9: removeVietnameseTones empty string');
+
+      const testItem = { name: 'Nước xả vải Comfort 3.8L', code: 'SP0019', category: 'Hóa mỹ phẩm' };
+      assert(App.matchesSearch(testItem, 'comfort', ['name', 'code']) === true, 'T2.10: matchesSearch single term');
+      assert(App.matchesSearch(testItem, 'xa vai 3.8L', ['name']) === true, 'T2.11: matchesSearch accents-free multi-word');
+      assert(App.matchesSearch(testItem, 'SP0019', ['code']) === true, 'T2.12: matchesSearch code exact');
+      assert(App.matchesSearch(testItem, 'Omo matic', ['name']) === false, 'T2.13: matchesSearch rejects non-matching');
+      assert(App.matchesSearch(testItem, '', ['name']) === true, 'T2.14: matchesSearch empty query matches all');
+
+      // ========================================================
+      // TEST SUITE 3: Initial Unauthenticated State & updateUserUI
+      // ========================================================
+      App.currentUser = null;
+      App.userPermissions = new Set();
+      App.updateUserUI();
+
+      const nameElem = document.getElementById('user-display-name');
+      const roleElem = document.getElementById('user-role-badge');
+      const initialsElem = document.getElementById('user-avatar-initials');
+      const badgeContainer = document.getElementById('topbar-user-badge');
+
+      assert(nameElem.textContent === 'Chưa đăng nhập', 'T3.1: user-display-name shows Chưa đăng nhập when unauthenticated');
+      assert(!roleElem.textContent.includes('Đang tải...'), 'T3.2: user-role-badge does NOT stick on Đang tải...');
+      assert(roleElem.textContent.includes('Chưa đăng nhập'), 'T3.3: user-role-badge shows Chưa đăng nhập');
+      assert(initialsElem.textContent === '--', 'T3.4: user initials shows --');
+      assert(badgeContainer.style.cursor === 'pointer', 'T3.5: topbar-user-badge is clickable when unauthenticated');
+
+      // Clicking unauthenticated user badge opens login modal
+      App.hideAuthModal();
+      assert(!document.getElementById('auth-modal').classList.contains('active'), 'T3.6: auth-modal hidden before click');
+      badgeContainer.click();
+      assert(document.getElementById('auth-modal').classList.contains('active'), 'T3.7: clicking topbar-user-badge opens auth-modal');
+
+      // ========================================================
+      // TEST SUITE 4: Authenticated State Transitions
+      // ========================================================
+      App.currentUser = {
+        id: 1,
+        username: 'admin',
+        full_name: 'Nguyễn Văn Quản Trị',
+        role: 'admin'
+      };
+      App.userPermissions = new Set(['orders:create', 'orders:view', 'users:manage', 'settings:manage']);
+      App.updateUserUI();
+
+      assert(nameElem.textContent === 'Nguyễn Văn Quản Trị', 'T4.1: user name shows full_name');
+      assert(roleElem.textContent.includes('Quản trị viên'), 'T4.2: user-role-badge shows Quản trị viên');
+      assert(initialsElem.textContent === 'NV', 'T4.3: user initials computed from full_name');
+      assert(badgeContainer.style.cursor === 'default', 'T4.4: topbar-user-badge cursor is default when logged in');
+
+      // Role name mapping
+      assert(App.getRoleName('admin') === 'Quản trị viên', 'T4.5: role admin name');
+      assert(App.getRoleName('cashier') === 'Thu ngân', 'T4.6: role cashier name');
+      assert(App.getRoleName('accountant') === 'Kế toán', 'T4.7: role accountant name');
+      assert(App.getRoleName('warehouse') === 'Thủ kho', 'T4.8: role warehouse name');
+
+      // ========================================================
+      // TEST SUITE 5: Navigation & Menu Item Clicks (All 14 Views)
+      // ========================================================
+      App.setupNavigation();
+      const viewsToTest = [
+        'pos', 'orders', 'returns', 'promotions', 'products', 'purchases',
+        'customers', 'suppliers', 'cash-flow', 'reports', 'audit', 'users',
+        'settings', 'dashboard'
+      ];
+
+      for (const v of viewsToTest) {
+        const menuItem = document.querySelector(`.menu-item[data-view="${v}"]`);
+        assert(menuItem !== null, `T5.Find: Menu item for view '${v}' exists`);
+        if (menuItem) {
+          menuItem.click();
+          assert(App.currentView === v, `T5.Click: App.currentView switched to '${v}' on menu click`);
+          assert(menuItem.classList.contains('active'), `T5.Active: Menu item '${v}' has active class`);
+          const sec = document.getElementById(`view-${v}`);
+          assert(sec && sec.style.display !== 'none', `T5.Display: view-${v} is displayed`);
+        }
+      }
+
+      // ========================================================
+      // TEST SUITE 6: Modal Show, Close Button & Backdrop Dismissal
+      // ========================================================
+      App.setupModals();
+
+      // Normal modal: opens, closes on button click
+      const sampleModal = document.getElementById('sample-dialog-modal');
+      sampleModal.classList.add('active');
+      assert(sampleModal.classList.contains('active'), 'T6.1: sample modal is active');
+      const closeBtn = sampleModal.querySelector('[data-close-modal="sample-dialog-modal"]');
+      closeBtn.click();
+      assert(!sampleModal.classList.contains('active'), 'T6.2: sample modal closed on closeBtn click');
+
+      // Normal modal: closes on backdrop click
+      sampleModal.classList.add('active');
+      sampleModal.click(); // Click on overlay
+      assert(!sampleModal.classList.contains('active'), 'T6.3: sample modal closed on backdrop click');
+
+      // Auth modal safety barrier: MUST NOT close on backdrop click!
+      const authModal = document.getElementById('auth-modal');
+      authModal.classList.add('active');
+      assert(authModal.classList.contains('active'), 'T6.4: auth-modal is active');
+      authModal.click(); // Click on auth overlay
+      assert(authModal.classList.contains('active'), 'T6.5: auth-modal PREVENTED dismissal on backdrop click');
+      App.hideAuthModal();
+      assert(!authModal.classList.contains('active'), 'T6.6: auth-modal closed via hideAuthModal()');
+
+      // Product and Customer modals close button test
+      const prodModal = document.getElementById('product-modal');
+      prodModal.classList.add('active');
+      prodModal.querySelector('[data-close-modal="product-modal"]').click();
+      assert(!prodModal.classList.contains('active'), 'T6.7: product-modal closed on closeBtn click');
+
+      const custModal = document.getElementById('customer-modal');
+      custModal.classList.add('active');
+      custModal.querySelector('[data-close-modal="customer-modal"]').click();
+      assert(!custModal.classList.contains('active'), 'T6.8: customer-modal closed on closeBtn click');
+
+      // ========================================================
+      // TEST SUITE 7: POS Module Functionality
+      // ========================================================
+      POS.init();
+      POS.products = [
+        { id: 1, code: 'SP01', name: 'Nước ngọt Coca', unit: 'Lon', sale_price: 10000, stock: 50, units: [] },
+        { id: 2, code: 'SP02', name: 'Bánh AFC Lúa Mì', unit: 'Hộp', sale_price: 35000, stock: 20, units: [] }
+      ];
+
+      // Cart initially empty
+      POS.clearCart();
+      assert(POS.cart.length === 0, 'T7.1: POS cart initialized empty');
+
+      // Add product to cart
+      POS.addToCart(1);
+      assert(POS.cart.length === 1, 'T7.2: POS cart has 1 item');
+      assert(POS.cart[0].product_id === 1, 'T7.3: Correct product added to cart');
+      assert(POS.cart[0].quantity === 1, 'T7.4: Default quantity is 1');
+      assert(POS.cart[0].subtotal === 10000, 'T7.5: Initial subtotal is 10,000 đ');
+
+      // Increase quantity
+      POS.updateQuantity(0, 3);
+      assert(POS.cart[0].quantity === 3, 'T7.6: Quantity updated to 3');
+      assert(POS.cart[0].subtotal === 30000, 'T7.7: Subtotal updated to 30,000 đ');
+
+      // Update calculations
+      POS.discountAmount = 5000;
+      POS.vatPercent = 10;
+      POS.calculateTotals();
+      // subtotal = 30000, discount = 5000 -> net = 25000, vat 10% = 2500 -> final = 27500
+      assert(POS.finalAmount === 27500, 'T7.8: POS final amount calculation with discount and VAT');
+
+      // Remove from cart
+      POS.removeFromCart(0);
+      assert(POS.cart.length === 0, 'T7.9: Item removed from cart');
+
+      // ========================================================
+      // TEST SUITE 8: Role-based Access Control (RBAC) & Access Denied
+      // ========================================================
+      // 8.1 Admin has all permissions
+      App.currentUser = { role: 'admin', full_name: 'Quản trị' };
+      assert(App.hasPermission('orders:create') === true, 'T8.1: Admin has orders:create');
+      assert(App.hasPermission('users:manage') === true, 'T8.2: Admin has users:manage');
+      assert(App.hasPermission('anything') === true, 'T8.3: Admin has arbitrary permission');
+
+      // 8.2 Cashier has limited permissions
+      App.currentUser = { role: 'cashier', full_name: 'Thu Ngân A' };
+      App.userPermissions = new Set(['orders:create', 'orders:view', 'returns:view']);
+      assert(App.hasPermission('orders:create') === true, 'T8.4: Cashier has orders:create');
+      assert(App.hasPermission('users:manage') === false, 'T8.5: Cashier does not have users:manage');
+
+      // 8.3 Unauthenticated guest has no permissions
+      App.currentUser = null;
+      App.userPermissions = new Set();
+      assert(App.hasPermission('orders:create') === false, 'T8.6: Guest has no permissions');
+
+      // 8.4 Access denied rendering for guest includes direct login button
+      const deniedGuestHtml = App.renderAccessDenied('orders:create');
+      assert(deniedGuestHtml.includes('Đăng nhập hệ thống'), 'T8.7: Guest access denied includes login prompt button');
+      assert(deniedGuestHtml.includes('Khách'), 'T8.8: Guest access denied identifies role as Khách');
+
+      // 8.5 Access denied for logged-in cashier includes role name
+      App.currentUser = { role: 'cashier', full_name: 'Trần Thị Thu Ngân' };
+      const deniedCashierHtml = App.renderAccessDenied('users:manage');
+      assert(deniedCashierHtml.includes('Thu ngân'), 'T8.9: Cashier access denied identifies role as Thu ngân');
+      assert(deniedCashierHtml.includes('Quay lại Tổng quan'), 'T8.10: Cashier access denied offers return to dashboard');
+
+      // ========================================================
+      // TEST SUITE 9: Orders / Invoices List Handling & Resiliency
+      // ========================================================
+      // 9.1 normalizeOrders with array
+      const arrInput = [{ id: 1, code: 'HD0001' }];
+      const resArr = App.normalizeOrders(arrInput);
+      assert(Array.isArray(resArr) && resArr.length === 1 && resArr[0].code === 'HD0001', 'T9.1: normalizeOrders handles array input');
+
+      // 9.2 normalizeOrders with object containing orders array
+      const objOrdersInput = { total: 1, orders: [{ id: 2, code: 'HD0002' }] };
+      const resObj = App.normalizeOrders(objOrdersInput);
+      assert(Array.isArray(resObj) && resObj.length === 1 && resObj[0].code === 'HD0002', 'T9.2: normalizeOrders handles object { total, orders }');
+
+      // 9.3 normalizeOrders with object containing data array
+      const objDataInput = { data: [{ id: 3, code: 'HD0003' }] };
+      const resData = App.normalizeOrders(objDataInput);
+      assert(Array.isArray(resData) && resData.length === 1 && resData[0].code === 'HD0003', 'T9.3: normalizeOrders handles object { data }');
+
+      // 9.4 normalizeOrders with object containing items array
+      const objItemsInput = { items: [{ id: 4, code: 'HD0004' }] };
+      const resItems = App.normalizeOrders(objItemsInput);
+      assert(Array.isArray(resItems) && resItems.length === 1 && resItems[0].code === 'HD0004', 'T9.4: normalizeOrders handles object { items }');
+
+      // 9.5 normalizeOrders with object containing invoices, rows, result arrays
+      assert(App.normalizeOrders({ invoices: [{ id: 5, code: 'HD0005' }] }).length === 1, 'T9.5: normalizeOrders handles object { invoices }');
+      assert(App.normalizeOrders({ rows: [{ id: 6, code: 'HD0006' }] }).length === 1, 'T9.6: normalizeOrders handles object { rows }');
+      assert(App.normalizeOrders({ result: [{ id: 7, code: 'HD0007' }] }).length === 1, 'T9.7: normalizeOrders handles object { result }');
+
+      // 9.8 normalizeOrders with empty, null, undefined, error objects
+      assert(Array.isArray(App.normalizeOrders(null)) && App.normalizeOrders(null).length === 0, 'T9.8: normalizeOrders handles null');
+      assert(Array.isArray(App.normalizeOrders(undefined)) && App.normalizeOrders(undefined).length === 0, 'T9.9: normalizeOrders handles undefined');
+      assert(Array.isArray(App.normalizeOrders({})) && App.normalizeOrders({}).length === 0, 'T9.10: normalizeOrders handles empty object');
+      assert(Array.isArray(App.normalizeOrders({ error: 'fail' })) && App.normalizeOrders({ error: 'fail' }).length === 0, 'T9.11: normalizeOrders handles error object');
+      assert(Array.isArray(App.normalizeOrders({ orders: null })) && App.normalizeOrders({ orders: null }).length === 0, 'T9.12: normalizeOrders handles null orders property');
+      assert(Array.isArray(App.normalizeOrders("not an array")) && App.normalizeOrders("not an array").length === 0, 'T9.13: normalizeOrders handles string input');
+      assert(Array.isArray(App.normalizeOrders(12345)) && App.normalizeOrders(12345).length === 0, 'T9.14: normalizeOrders handles number input');
+      assert(Array.isArray(App.normalizeOrders(true)) && App.normalizeOrders(true).length === 0, 'T9.15: normalizeOrders handles boolean input');
+
+      // ========================================================
+      // TEST SUITE 10: Product Modal Opening, Editing & Resiliency
+      // ========================================================
+      // 10.1 openCreateProductModal
+      App.openCreateProductModal();
+      const createModal = document.getElementById('product-modal');
+      assert(createModal && createModal.classList.contains('active'), 'T10.1: openCreateProductModal sets active class on product-modal');
+      assert(document.getElementById('product-modal-title').textContent === 'Thêm hàng hóa mới', 'T10.2: Modal title set to Thêm hàng hóa mới');
+      assert(document.getElementById('prod-id').value === '', 'T10.3: prod-id reset to empty');
+      assert(document.getElementById('prod-stock').disabled === false, 'T10.4: prod-stock input is enabled for new product');
+
+      // 10.2 openEditProductModal with mock API.getProducts
+      const originalGetProducts = API.getProducts;
+      API.getProducts = async () => [
+        {
+          id: 42,
+          code: 'SP0042',
+          barcode: '893000042',
+          name: 'Nước Ngọt Mirinda Cam 330ml',
+          category: 'Nước giải khát',
+          unit: 'Lon',
+          sub_unit: 'Thùng',
+          sub_unit_ratio: 24,
+          cost_price: 8000,
+          sale_price: 12000,
+          stock: 96,
+          min_stock: 12,
+          units: [
+            { unit_name: 'Lon', conversion_rate: 1.0, is_base: 1, sale_price: 12000, barcode: '893000042' },
+            { unit_name: 'Thùng', conversion_rate: 24.0, is_base: 0, sale_price: 270000, barcode: '893000042-TH' }
+          ]
+        }
+      ];
+
+      // Spy on App.toast to ensure no error is triggered
+      let lastToast = null;
+      const originalToast = App.toast;
+      App.toast = (msg, type) => { lastToast = { msg, type }; originalToast(msg, type); };
+
+      await App.openEditProductModal(42);
+      assert(createModal.classList.contains('active'), 'T10.5: openEditProductModal activates product-modal');
+      assert(document.getElementById('product-modal-title').textContent.includes('Mirinda Cam'), 'T10.6: Modal title contains product name');
+      assert(document.getElementById('prod-id').value === '42', 'T10.7: prod-id populated with product id');
+      assert(document.getElementById('prod-code').value === 'SP0042', 'T10.8: prod-code populated');
+      assert(document.getElementById('prod-barcode').value === '893000042', 'T10.9: prod-barcode populated');
+      assert(document.getElementById('prod-name').value === 'Nước Ngọt Mirinda Cam 330ml', 'T10.10: prod-name populated');
+      assert(document.getElementById('prod-unit').value === 'Lon', 'T10.11: prod-unit populated');
+      assert(document.getElementById('prod-stock').disabled === true, 'T10.12: prod-stock input disabled during edit');
+      assert(document.getElementById('prod-cost-price').value === '8000', 'T10.13: prod-cost-price populated');
+      assert(document.getElementById('prod-sale-price').value === '12000', 'T10.14: prod-sale-price populated');
+      assert(lastToast === null || lastToast.type !== 'error', 'T10.15: No error toast triggered during openEditProductModal');
+
+      // 10.3 Aliases openProductModal and editProduct
+      assert(typeof App.openProductModal === 'function', 'T10.16: App.openProductModal alias exists');
+      assert(typeof App.editProduct === 'function', 'T10.17: App.editProduct alias exists');
+
+      // 10.4 Resiliency: openEditProductModal with missing product ID
+      lastToast = null;
+      await App.openEditProductModal(999999);
+      assert(lastToast !== null && lastToast.type === 'warning', 'T10.18: Non-existent product id safely handled with warning');
+
+      // 10.5 Resiliency: openEditProductModal when DOM has missing optional elements
+      const subUnitEl = document.getElementById('prod-sub-unit');
+      const subRatioEl = document.getElementById('prod-sub-unit-ratio');
+      if (subUnitEl) subUnitEl.remove();
+      if (subRatioEl) subRatioEl.remove();
+
+      lastToast = null;
+      await App.openEditProductModal(42);
+      assert(lastToast === null || lastToast.type !== 'error', 'T10.19: openEditProductModal executes cleanly even when prod-sub-unit elements are absent');
+
+      // 10.6 String ID support and window global aliases
+      lastToast = null;
+      await App.openProductModal('42');
+      assert(document.getElementById('prod-id').value === '42', 'T10.20: openProductModal accepts string id "42"');
+      assert(lastToast === null || lastToast.type !== 'error', 'T10.21: No error toast for string id');
+
+      assert(typeof window.openProductModal === 'function', 'T10.22: window.openProductModal global alias exists');
+      assert(typeof window.editProduct === 'function', 'T10.23: window.editProduct global alias exists');
+      assert(typeof window.openEditProductModal === 'function', 'T10.24: window.openEditProductModal global alias exists');
+      assert(typeof window.openCreateProductModal === 'function', 'T10.25: window.openCreateProductModal global alias exists');
+
+      // 10.7 openProductModal without id delegates to openCreateProductModal
+      App.openProductModal();
+      assert(document.getElementById('product-modal-title').textContent === 'Thêm hàng hóa mới', 'T10.26: openProductModal() without id opens create modal');
+
+      // Restore
+      API.getProducts = originalGetProducts;
+      App.toast = originalToast;
+
+      // ========================================================
+      // ALL TESTS SUMMARY
+      // ========================================================
+      const failed = results.filter(r => !r.pass);
+      const testDiv = document.getElementById('test-results');
+      if (failed.length === 0) {
+        testDiv.innerHTML = 'ALL_TESTS_PASSED: ' + results.length + ' tests verified successfully';
+      } else {
+        testDiv.innerHTML = 'TESTS_FAILED: ' + JSON.stringify(failed);
+      }
+    } catch (e) {
+      document.getElementById('test-results').innerHTML = 'TEST_EXCEPTION: ' + e.message + '\n' + e.stack;
+    }
+    })();
+  </script>
+</body>
+</html>

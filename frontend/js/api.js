@@ -199,6 +199,9 @@ const API = {
       body: JSON.stringify(data)
     });
   },
+  getCustomerOrdersCount(customerId) {
+    return this.request(`/api/customers/${customerId}/orders/count`);
+  },
 
   // Customer-Specific Product Pricing
   getCustomerPrices(customerId) {
@@ -245,8 +248,9 @@ const API = {
   },
 
   // Orders / Sales (Output)
-  getOrders() {
-    return this.request('/api/orders');
+  getOrders(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/orders${qs ? '?' + qs : ''}`);
   },
   getOrder(id) {
     return this.request(`/api/orders/${id}`);
@@ -256,6 +260,115 @@ const API = {
       method: 'POST',
       body: JSON.stringify(data)
     });
+  },
+  updateOrder(id, data) {
+    return this.request(`/api/orders/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  deleteOrder(id) {
+    return this.request(`/api/orders/${id}`, { method: 'DELETE' });
+  },
+  cloneOrder(id) {
+    return this.request(`/api/orders/${id}/clone`, { method: 'POST' });
+  },
+
+  // Invoices (Hóa đơn - CRUD + Duplicate)
+  getInvoice(id) {
+    return this.request(`/api/invoices/${id}`);
+  },
+  updateInvoice(id, data) {
+    return this.request(`/api/invoices/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  deleteInvoice(id) {
+    return this.request(`/api/invoices/${id}`, { method: 'DELETE' });
+  },
+  duplicateInvoice(id) {
+    return this.request(`/api/invoices/${id}/duplicate`, { method: 'POST' });
+  },
+
+  // Promotions (Chương trình khuyến mãi)
+  getPromotions(activeOnly = false) {
+    const qs = activeOnly ? '?active_only=1' : '';
+    return this.request(`/api/promotions${qs}`);
+  },
+  createPromotion(data) {
+    return this.request('/api/promotions', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  updatePromotion(id, data) {
+    return this.request(`/api/promotions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+  deletePromotion(id) {
+    return this.request(`/api/promotions/${id}`, { method: 'DELETE' });
+  },
+  togglePromotion(id) {
+    return this.request(`/api/promotions/${id}/toggle`, { method: 'POST' });
+  },
+
+  // Export to Excel (.xlsx)
+  async exportXlsx(payload) {
+    const defaultHeaders = {
+      'Content-Type': 'application/json'
+    };
+    if (this.token) {
+      defaultHeaders['Authorization'] = `Bearer ${this.token}`;
+    }
+    const response = await fetch('/api/export/xlsx', {
+      method: 'POST',
+      headers: defaultHeaders,
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error(`Xuất Excel thất bại (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = payload.filename ? (payload.filename.endsWith('.xlsx') ? payload.filename : payload.filename + '.xlsx') : 'export.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  // Generic Export by Table Name (GET /api/export/<table>)
+  async exportTable(tableName) {
+    const defaultHeaders = {};
+    if (this.token) {
+      defaultHeaders['Authorization'] = `Bearer ${this.token}`;
+    }
+    const response = await fetch(`/api/export/${encodeURIComponent(tableName)}`, {
+      method: 'GET',
+      headers: defaultHeaders
+    });
+    if (!response.ok) {
+      let errMsg = `Xuất Excel thất bại (${response.status})`;
+      try {
+        const errData = await response.json();
+        if (errData && errData.message) errMsg = errData.message;
+      } catch (e) {}
+      throw new Error(errMsg);
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${tableName}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
   },
 
   // Purchases / Goods Receipt (Input)
@@ -276,10 +389,21 @@ const API = {
   getReturns() {
     return this.request('/api/returns');
   },
+  getReturn(id) {
+    return this.request(`/api/returns/${id}`);
+  },
   createReturn(data) {
     return this.request('/api/returns', {
       method: 'POST',
       body: JSON.stringify(data)
+    });
+  },
+
+  // Backup & Restore
+  restoreBackup(databaseBase64) {
+    return this.request('/api/backup/restore', {
+      method: 'POST',
+      body: JSON.stringify({ database_base64: databaseBase64 })
     });
   },
 
@@ -306,3 +430,5 @@ const API = {
     });
   }
 };
+
+window.API = API;

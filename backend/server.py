@@ -14,11 +14,16 @@ import socket
 import mimetypes
 import datetime
 import hmac
+import base64
+import shutil
+import time
+import tempfile
 from http import cookies
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from database import get_db, init_db, DB_FILE
+from database import get_db, init_db, DB_FILE, format_stock_breakdown
 import auth
+from export_xlsx import create_xlsx
 
 PORT = int(os.environ.get('PORT', '8080'))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontend')
@@ -50,11 +55,83 @@ def get_lan_ip():
     except Exception:
         return "127.0.0.1"
 
+def find_best_promotion(cursor, total_amount, items):
+    """
+    Find best active promotion among percent, fixed, and order discount promos.
+    Returns (best_promo_dict, discount_amount).
+    """
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    cursor.execute("""
+        SELECT * FROM promotions
+        WHERE is_active = 1
+          AND (start_date IS NULL OR start_date <= ?)
+          AND (end_date IS NULL OR end_date >= ?)
+        ORDER BY id DESC
+    """, (today_str, today_str))
+    promos = rows_to_list(cursor.fetchall())
+    best_promo = None
+    max_discount = 0.0
+
+    for p in promos:
+        min_order = float(p.get('min_order_amount') or 0)
+        if min_order > 0 and total_amount < min_order:
+            continue
+
+        app_raw = p.get('applicable_product_ids')
+        applicable_ids = None
+        if app_raw:
+            try:
+                if isinstance(app_raw, (list, set, tuple)):
+                    applicable_ids = {int(x) for x in app_raw}
+                elif isinstance(app_raw, str):
+                    if app_raw.strip().startswith('['):
+                        applicable_ids = {int(x) for x in json.loads(app_raw)}
+                    else:
+                        applicable_ids = {int(x.strip()) for x in app_raw.split(',') if x.strip().isdigit()}
+            except Exception:
+                applicable_ids = None
+
+        if applicable_ids is not None:
+            calc_base = sum(
+                float(it.get('subtotal', float(it.get('quantity', 1)) * float(it.get('sale_price', 0))))
+                for it in items if it.get('product_id') in applicable_ids
+            )
+            if calc_base <= 0:
+                continue
+        else:
+            calc_base = total_amount
+
+        val = float(p.get('value') or p.get('discount_value') or 0)
+        p_type = p.get('type')
+        if p_type in ('percent', 'order_discount_percent'):
+            discount = round(calc_base * (val / 100))
+        elif p_type in ('fixed', 'order_discount_amount'):
+            discount = min(calc_base, val)
+        else:
+            discount = 0.0
+
+        if discount > max_discount:
+            max_discount = discount
+            best_promo = p
+
+    return best_promo, max_discount
+
 class ThreadedHTTPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
 class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
+    def parse_request(self):
+        try:
+            line = str(self.raw_requestline, 'iso-8859-1').rstrip('\r\n')
+            parts = line.split()
+            if len(parts) > 3 and parts[-1].startswith('HTTP/'):
+                fixed = parts[0] + ' ' + '%20'.join(parts[1:-1]) + ' ' + parts[-1] + '\r\n'
+                self.raw_requestline = fixed.encode('iso-8859-1')
+        except Exception:
+            pass
+        return super().parse_request()
+
     def end_headers(self):
         origin = self.headers.get('Origin')
         if origin:
@@ -518,6 +595,87 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 })
                 return
 
+            # 7b. INVOICE MANAGEMENT (alias for orders with invoice:manage permission)
+            # GET /api/invoices/:id
+            if path.startswith('/api/invoices/') and not path.endswith('/duplicate'):
+                parts = path.split('/')
+                invoice_id = parts[3] if len(parts) > 3 else None
+                if invoice_id:
+                    user, ok = self.require_auth('orders:view', conn=conn)
+                    if not ok:
+                        return
+                    cursor.execute("SELECT * FROM orders WHERE id = ?", (invoice_id,))
+                    invoice = row_to_dict(cursor.fetchone())
+                    if not invoice:
+                        self.send_error_json("Không tìm thấy hóa đơn", 404)
+                        return
+                    cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (invoice_id,))
+                    invoice['items'] = rows_to_list(cursor.fetchall())
+                    self.send_json(invoice)
+                    return
+
+            # CUSTOMER ORDER COUNT
+            # GET /api/customers/:id/orders/count
+            if path.startswith('/api/customers/') and path.endswith('/orders/count'):
+                user, ok = self.require_auth('customers:view', conn=conn)
+                if not ok:
+                    return
+                parts = path.split('/')
+                cust_id = parts[3] if len(parts) > 3 else None
+                if cust_id:
+                    cursor.execute("SELECT id FROM customers WHERE id = ?", (cust_id,))
+                    if not cursor.fetchone():
+                        self.send_error_json("Khách hàng không tồn tại", 404)
+                        return
+                    try:
+                        cursor.execute("SELECT order_count FROM customer_order_summary WHERE customer_id = ?", (cust_id,))
+                        row = cursor.fetchone()
+                        count = row[0] if row else 0
+                    except Exception:
+                        cursor.execute(
+                            "SELECT COUNT(*) FROM orders WHERE customer_id = ? AND status = 'completed'",
+                            (cust_id,)
+                        )
+                        count = cursor.fetchone()[0]
+                    self.send_json({"orderCount": count})
+                    return
+
+            # EXCEL EXPORT
+            # GET /api/export/<table>
+            if path.startswith('/api/export/') and not path.endswith('/xlsx'):
+                user, ok = self.require_auth('export', conn=conn)
+                if not ok:
+                    return
+                table_name = path.split('/api/export/', 1)[1].strip('/')
+                EXPORT_WHITELIST = {
+                    'invoices': 'orders',
+                    'orders': 'orders',
+                    'products': 'products',
+                    'customers': 'customers',
+                    'suppliers': 'suppliers',
+                    'distributors': 'suppliers',
+                    'promotions': 'promotions',
+                }
+                if table_name not in EXPORT_WHITELIST:
+                    self.send_error_json(f"Bảng '{table_name}' không được phép xuất", 400)
+                    return
+                actual_table = EXPORT_WHITELIST[table_name]
+                try:
+                    cursor.execute(f"SELECT * FROM {actual_table} ORDER BY id DESC")
+                    rows = rows_to_list(cursor.fetchall())
+                except Exception as e:
+                    self.send_error_json(f"Lỗi truy vấn dữ liệu: {str(e)}", 500)
+                    return
+                from export_xlsx import export_to_excel
+                xlsx_bytes = export_to_excel(table_name, rows)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.send_header('Content-Disposition', f'attachment; filename="{table_name}.xlsx"')
+                self.send_header('Content-Length', str(len(xlsx_bytes)))
+                self.end_headers()
+                self.wfile.write(xlsx_bytes)
+                return
+
             # 8. PRODUCTS & INVENTORY
             if path == '/api/products':
                 user, ok = self.require_auth('products:view', conn=conn)
@@ -525,12 +683,26 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     return
 
                 q = query.get('q', [''])[0].strip()
+                search = query.get('search', [''])[0].strip()
+                search_by = query.get('searchBy', ['both'])[0].strip().lower()
                 category = query.get('category', [''])[0].strip()
                 sql = "SELECT * FROM products WHERE 1=1"
                 params = []
+                # Legacy q= search (searches name, code, barcode)
                 if q:
                     sql += " AND (name LIKE ? OR code LIKE ? OR barcode LIKE ?)"
                     params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
+                # New search= with searchBy=code|name|both
+                elif search:
+                    if search_by == 'code':
+                        sql += " AND LOWER(code) LIKE LOWER(?)"
+                        params.append(f"%{search}%")
+                    elif search_by == 'name':
+                        sql += " AND LOWER(name) LIKE LOWER(?)"
+                        params.append(f"%{search}%")
+                    else:  # both (default)
+                        sql += " AND (LOWER(code) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?))"
+                        params.extend([f"%{search}%", f"%{search}%"])
                 if category and category != 'all':
                     sql += " AND category = ?"
                     params.append(category)
@@ -538,11 +710,41 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 cursor.execute(sql, params)
                 items = rows_to_list(cursor.fetchall())
 
+                # Load units and stock breakdown
+                cursor.execute("SELECT * FROM product_units ORDER BY conversion_rate DESC")
+                all_units = rows_to_list(cursor.fetchall())
+                units_by_product = {}
+                for u in all_units:
+                    units_by_product.setdefault(u['product_id'], []).append(u)
+
+                # Pre-orders sum per product
+                cursor.execute("""
+                    SELECT oi.product_id, SUM(oi.quantity * COALESCE(oi.unit_conversion_rate, 1)) as ordered_qty
+                    FROM order_items oi
+                    JOIN orders o ON oi.order_id = o.id
+                    WHERE o.status = 'ordered'
+                    GROUP BY oi.product_id
+                """)
+                ordered_map = {r['product_id']: r['ordered_qty'] for r in cursor.fetchall()}
+
                 # Strict Cost Price Protection: if role lacks 'products:view_cost', mask cost_price!
                 can_view_cost = auth.has_permission(user['role'], 'products:view_cost')
-                if not can_view_cost:
-                    for item in items:
+                for item in items:
+                    pid = item['id']
+                    p_units = units_by_product.get(pid, [])
+                    if not p_units:
+                        p_units = [{
+                            'id': 0, 'product_id': pid, 'unit_name': item['unit'],
+                            'conversion_rate': 1.0, 'sale_price': item['sale_price'],
+                            'cost_price': item['cost_price'], 'is_base': 1
+                        }]
+                    item['units'] = p_units
+                    item['stock_breakdown'] = format_stock_breakdown(item['stock'], p_units)
+                    item['ordered_qty'] = ordered_map.get(pid, 0)
+                    if not can_view_cost:
                         item['cost_price'] = 0
+                        for u in item['units']:
+                            u['cost_price'] = 0
 
                 self.send_json(items)
                 return
@@ -577,12 +779,39 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 q = query.get('q', [''])[0].strip()
+                search = query.get('search', [''])[0].strip()
+                search_by = query.get('searchBy', ['both'])[0].strip().lower()
                 if q:
-                    cursor.execute("SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? OR code LIKE ? ORDER BY id DESC",
-                                   (f"%{q}%", f"%{q}%", f"%{q}%"))
+                    cursor.execute("SELECT * FROM customers WHERE name LIKE ? OR phone LIKE ? OR code LIKE ? OR address LIKE ? OR email LIKE ? ORDER BY id DESC",
+                                   (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
+                elif search:
+                    if search_by == 'code':
+                        cursor.execute("SELECT * FROM customers WHERE LOWER(code) LIKE LOWER(?) ORDER BY id DESC",
+                                       (f"%{search}%",))
+                    elif search_by == 'name':
+                        cursor.execute("SELECT * FROM customers WHERE LOWER(name) LIKE LOWER(?) ORDER BY id DESC",
+                                       (f"%{search}%",))
+                    else:  # both
+                        cursor.execute("SELECT * FROM customers WHERE LOWER(code) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?) ORDER BY id DESC",
+                                       (f"%{search}%", f"%{search}%"))
                 else:
                     cursor.execute("SELECT * FROM customers ORDER BY id DESC")
-                self.send_json(rows_to_list(cursor.fetchall()))
+                customers = rows_to_list(cursor.fetchall())
+
+                # Pending pre-orders calculation per customer
+                cursor.execute("""
+                    SELECT customer_id, COUNT(*) as pending_count, SUM(final_amount) as pending_amount
+                    FROM orders
+                    WHERE status = 'ordered' AND customer_id IS NOT NULL
+                    GROUP BY customer_id
+                """)
+                pending_map = {r['customer_id']: (r['pending_count'], r['pending_amount']) for r in cursor.fetchall()}
+                for c in customers:
+                    p_info = pending_map.get(c['id'], (0, 0))
+                    c['pending_orders_count'] = p_info[0]
+                    c['pending_orders_amount'] = p_info[1] or 0
+
+                self.send_json(customers)
                 return
 
             if path.startswith('/api/customers/') and path.endswith('/prices'):
@@ -630,30 +859,125 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(res)
                 return
 
-            # 10. SUPPLIERS
-            if path == '/api/suppliers':
+            # 10. SUPPLIERS & DISTRIBUTORS
+            if path == '/api/suppliers' or path == '/api/distributors':
                 user, ok = self.require_auth('suppliers:view', conn=conn)
                 if not ok:
                     return
                 q = query.get('q', [''])[0].strip()
+                search = query.get('search', [''])[0].strip()
+                search_by = query.get('searchBy', ['both'])[0].strip().lower()
                 if q:
-                    cursor.execute("SELECT * FROM suppliers WHERE name LIKE ? OR phone LIKE ? OR code LIKE ? ORDER BY id DESC",
-                                   (f"%{q}%", f"%{q}%", f"%{q}%"))
+                    cursor.execute("SELECT * FROM suppliers WHERE name LIKE ? OR phone LIKE ? OR code LIKE ? OR address LIKE ? OR email LIKE ? ORDER BY id DESC",
+                                   (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
+                elif search:
+                    if search_by == 'code':
+                        cursor.execute("SELECT * FROM suppliers WHERE LOWER(code) LIKE LOWER(?) ORDER BY id DESC",
+                                       (f"%{search}%",))
+                    elif search_by == 'name':
+                        cursor.execute("SELECT * FROM suppliers WHERE LOWER(name) LIKE LOWER(?) ORDER BY id DESC",
+                                       (f"%{search}%",))
+                    else:  # both
+                        cursor.execute("SELECT * FROM suppliers WHERE LOWER(code) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?) ORDER BY id DESC",
+                                       (f"%{search}%", f"%{search}%"))
                 else:
                     cursor.execute("SELECT * FROM suppliers ORDER BY id DESC")
                 self.send_json(rows_to_list(cursor.fetchall()))
                 return
 
-            # 11. ORDERS
-            if path == '/api/orders':
+            # 11. ORDERS & INVOICES (HÓA ĐƠN & ĐƠN HÀNG)
+            if path == '/api/orders' or path == '/api/invoices':
                 user, ok = self.require_auth('orders:view', conn=conn)
                 if not ok:
                     return
-                cursor.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 100")
-                self.send_json(rows_to_list(cursor.fetchall()))
+
+                status = query.get('status', [''])[0].strip()
+                period = query.get('period', [''])[0].strip()
+                date_from = query.get('date_from', [''])[0].strip()
+                date_to = query.get('date_to', [''])[0].strip()
+                payment_method = query.get('payment_method', [''])[0].strip()
+                customer_id = query.get('customer_id', [''])[0].strip()
+                q = query.get('q', [''])[0].strip()
+                search = query.get('search', [''])[0].strip()
+                search_by = query.get('searchBy', ['both'])[0].strip().lower()
+                limit = min(int(query.get('limit', [100])[0]), 500)
+                offset = max(int(query.get('offset', [0])[0]), 0)
+
+                conditions = ["1=1"]
+                params = []
+
+                if status and status != 'all':
+                    conditions.append("o.status = ?")
+                    params.append(status)
+                if payment_method and payment_method != 'all':
+                    conditions.append("o.payment_method = ?")
+                    params.append(payment_method)
+                if customer_id:
+                    conditions.append("o.customer_id = ?")
+                    params.append(customer_id)
+                if date_from:
+                    conditions.append("o.created_at >= ?")
+                    params.append(f"{date_from} 00:00:00")
+                if date_to:
+                    conditions.append("o.created_at <= ?")
+                    params.append(f"{date_to} 23:59:59")
+                elif period and period != 'all':
+                    today = datetime.date.today()
+                    if period == 'today':
+                        conditions.append("o.created_at >= ?")
+                        params.append(f"{today.strftime('%Y-%m-%d')} 00:00:00")
+                    elif period == 'yesterday':
+                        yesterday = today - datetime.timedelta(days=1)
+                        conditions.append("o.created_at >= ? AND o.created_at <= ?")
+                        params.extend([f"{yesterday.strftime('%Y-%m-%d')} 00:00:00", f"{yesterday.strftime('%Y-%m-%d')} 23:59:59"])
+                    elif period == '7days':
+                        d7 = today - datetime.timedelta(days=7)
+                        conditions.append("o.created_at >= ?")
+                        params.append(f"{d7.strftime('%Y-%m-%d')} 00:00:00")
+                    elif period == 'this_month':
+                        m_start = today.replace(day=1)
+                        conditions.append("o.created_at >= ?")
+                        params.append(f"{m_start.strftime('%Y-%m-%d')} 00:00:00")
+
+                if search:
+                    if search_by == 'code':
+                        conditions.append("LOWER(o.code) LIKE LOWER(?)")
+                        params.append(f"%{search}%")
+                    elif search_by == 'name':
+                        conditions.append("LOWER(o.customer_name) LIKE LOWER(?)")
+                        params.append(f"%{search}%")
+                    else:
+                        conditions.append("(LOWER(o.code) LIKE LOWER(?) OR LOWER(o.customer_name) LIKE LOWER(?))")
+                        params.extend([f"%{search}%", f"%{search}%"])
+                elif q:
+                    conditions.append("(o.code LIKE ? OR o.customer_name LIKE ? OR o.user_name LIKE ? OR o.notes LIKE ?)")
+                    params.extend([f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"])
+
+                where_clause = " AND ".join(conditions)
+
+                cursor.execute(f"SELECT COUNT(*) FROM orders o WHERE {where_clause}", params)
+                total_count = cursor.fetchone()[0]
+
+                cursor.execute(f"""
+                    SELECT o.*,
+                           (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as items_count,
+                           (SELECT GROUP_CONCAT(product_name || ' (x' || quantity || ' ' || COALESCE(unit, '') || ')', ', ')
+                            FROM order_items WHERE order_id = o.id) as items_summary
+                    FROM orders o
+                    WHERE {where_clause}
+                    ORDER BY o.id DESC
+                    LIMIT ? OFFSET ?
+                """, params + [limit, offset])
+
+                orders = rows_to_list(cursor.fetchall())
+                # Return list if limit is 100 without pagination requested (backward compatibility) or dict
+                if 'period' in query or 'status' in query or 'q' in query or 'offset' in query:
+                    self.send_json({"total": total_count, "orders": orders})
+                else:
+                    self.send_json(orders)
                 return
 
-            if path.startswith('/api/orders/') and not path.endswith('/items'):
+            if path.startswith('/api/orders/') and not path.endswith('/items') and not path.endswith('/clone'):
                 user, ok = self.require_auth('orders:view', conn=conn)
                 if not ok:
                     return
@@ -666,6 +990,50 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
                 order['items'] = rows_to_list(cursor.fetchall())
                 self.send_json(order)
+                return
+
+            # 12. PROMOTIONS
+            if path == '/api/promotions':
+                user, ok = self.require_auth('promotions:view', conn=conn)
+                if not ok:
+                    return
+                active_only = (query.get('active_only', [''])[0].strip().lower() in ('1', 'true', 'yes')) or (query.get('active', [''])[0].strip().lower() in ('1', 'true', 'yes'))
+                today_str = datetime.date.today().strftime('%Y-%m-%d')
+                if active_only:
+                    cursor.execute("""
+                        SELECT p.*,
+                               tp.name as target_product_name, tp.code as target_product_code,
+                               gp.name as gift_product_name, gp.code as gift_product_code
+                        FROM promotions p
+                        LEFT JOIN products tp ON p.target_product_id = tp.id
+                        LEFT JOIN products gp ON p.gift_product_id = gp.id
+                        WHERE p.is_active = 1
+                          AND (p.start_date IS NULL OR p.start_date <= ?)
+                          AND (p.end_date IS NULL OR p.end_date >= ?)
+                        ORDER BY p.id DESC
+                    """, (today_str, today_str))
+                else:
+                    cursor.execute("""
+                        SELECT p.*,
+                               tp.name as target_product_name, tp.code as target_product_code,
+                               gp.name as gift_product_name, gp.code as gift_product_code
+                        FROM promotions p
+                        LEFT JOIN products tp ON p.target_product_id = tp.id
+                        LEFT JOIN products gp ON p.gift_product_id = gp.id
+                        ORDER BY p.id DESC
+                    """)
+                promos = rows_to_list(cursor.fetchall())
+                for p in promos:
+                    val = p.get('value')
+                    disc_val = p.get('discount_value')
+                    if val is None and disc_val is not None:
+                        p['value'] = disc_val
+                    elif disc_val is None and val is not None:
+                        p['discount_value'] = val
+                    elif val is None and disc_val is None:
+                        p['value'] = 0.0
+                        p['discount_value'] = 0.0
+                self.send_json(promos)
                 return
 
             # 12. PURCHASES
@@ -703,6 +1071,26 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     cursor.execute("SELECT * FROM return_items WHERE return_id = ?", (r['id'],))
                     r['items'] = rows_to_list(cursor.fetchall())
                 self.send_json(returns)
+                return
+
+            if path.startswith('/api/returns/') and not path.endswith('/items'):
+                user, ok = self.require_auth('returns:view', conn=conn)
+                if not ok:
+                    return
+                try:
+                    rid = int(path.split('/')[-1])
+                except ValueError:
+                    self.send_error_json("ID phiếu trả hàng không hợp lệ", 400)
+                    return
+                cursor.execute("SELECT * FROM returns WHERE id = ?", (rid,))
+                row = cursor.fetchone()
+                if not row:
+                    self.send_error_json("Không tìm thấy phiếu trả hàng", 404)
+                    return
+                ret = row_to_dict(row)
+                cursor.execute("SELECT * FROM return_items WHERE return_id = ?", (rid,))
+                ret['items'] = rows_to_list(cursor.fetchall())
+                self.send_json(ret)
                 return
 
             # 14. CASH FLOW
@@ -1161,6 +1549,31 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 """, (code, barcode, name, category, unit, sub_unit, sub_unit_ratio, cost_price, sale_price, stock, min_stock, now, now))
                 pid = cursor.lastrowid
 
+                units_input = body.get('units', [])
+                if units_input:
+                    for u in units_input:
+                        u_name = u.get('unit_name', '').strip()
+                        if u_name:
+                            u_rate = float(u.get('conversion_rate', 1))
+                            u_sale = float(u.get('sale_price', sale_price * u_rate))
+                            u_cost = float(u.get('cost_price', cost_price * u_rate))
+                            u_barcode = u.get('barcode', '')
+                            u_is_base = 1 if u.get('is_base') else 0
+                            cursor.execute("""
+                                INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (pid, u_name, u_rate, u_sale, u_cost, u_barcode, u_is_base, now))
+                else:
+                    cursor.execute("""
+                        INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, created_at)
+                        VALUES (?, ?, 1, ?, ?, ?, 1, ?)
+                    """, (pid, unit, sale_price, cost_price, barcode, now))
+                    if sub_unit and sub_unit_ratio > 1:
+                        cursor.execute("""
+                            INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, created_at)
+                            VALUES (?, ?, ?, ?, ?, NULL, 0, ?)
+                        """, (pid, sub_unit, round(1.0 / sub_unit_ratio, 6), round(sale_price / sub_unit_ratio), round(cost_price / sub_unit_ratio), now))
+
                 if stock > 0:
                     cursor.execute("""
                         INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
@@ -1434,6 +1847,10 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error_json("Đơn hàng phải có ít nhất một sản phẩm", 400)
                     return
 
+                order_status = body.get('status', 'completed')
+                if order_status not in ('completed', 'ordered'):
+                    order_status = 'completed'
+
                 cursor.execute("SELECT value FROM store_settings WHERE key = 'allow_negative_stock'")
                 allow_neg_row = cursor.fetchone()
                 allow_negative_stock = (allow_neg_row['value'].lower() == 'true') if allow_neg_row else False
@@ -1443,11 +1860,13 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     if qty <= 0:
                         self.send_error_json("Số lượng sản phẩm trong đơn phải lớn hơn 0", 400)
                         return
-                    if not allow_negative_stock:
-                        cursor.execute("SELECT stock, name FROM products WHERE id = ?", (item['product_id'],))
+                    conv = float(item.get('unit_conversion_rate', 1.0))
+                    base_qty = qty * conv
+                    if order_status == 'completed' and not allow_negative_stock:
+                        cursor.execute("SELECT stock, name, unit FROM products WHERE id = ?", (item['product_id'],))
                         p = cursor.fetchone()
-                        if p and p['stock'] < qty:
-                            self.send_error_json(f"Sản phẩm '{p['name']}' chỉ còn tồn {p['stock']}, không đủ để bán {qty}", 400)
+                        if p and p['stock'] < base_qty:
+                            self.send_error_json(f"Sản phẩm '{p['name']}' chỉ còn tồn {p['stock']} {p['unit']}, không đủ để bán {qty} {item.get('unit', p['unit'])}", 400)
                             return
 
                 customer_id = body.get('customer_id')
@@ -1457,6 +1876,9 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 customer_paid = max(0, float(body.get('paid_amount', 0)))
                 payment_method = body.get('payment_method', 'cash')
                 notes = body.get('notes', '')
+                promotion_id = body.get('promotion_id')
+                promotion_code = body.get('promotion_code')
+                promotion_discount = max(0, float(body.get('promotion_discount', 0)))
                 now = get_now_str()
 
                 total_amount = 0
@@ -1476,25 +1898,39 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                         return
 
                     qty = float(item['quantity'])
-                    subtotal = qty * sale_price
+                    conv = float(item.get('unit_conversion_rate', 1.0))
+                    base_qty = qty * conv
+                    is_gift = 1 if item.get('is_gift') else 0
+                    subtotal = 0 if is_gift else (qty * sale_price)
                     total_amount += subtotal
 
-                    cost_price = p['cost_price']
+                    cost_price = p['cost_price'] * conv
                     total_cost += qty * cost_price
 
                     processed_items.append({
                         "product_id": p['id'],
                         "product_code": p['code'],
                         "product_name": p['name'],
-                        "unit": p['unit'],
+                        "unit": item.get('unit', p['unit']),
+                        "unit_conversion_rate": conv,
                         "quantity": qty,
+                        "base_qty": base_qty,
                         "cost_price": cost_price,
                         "sale_price": sale_price,
                         "is_custom_price": item.get('is_custom_price', 0),
                         "save_as_custom": item.get('save_as_custom_price', False),
+                        "is_gift": is_gift,
                         "subtotal": subtotal,
                         "current_stock": p['stock']
                     })
+
+                if body.get('apply_best_promotion') or body.get('auto_promotion') or promotion_id == 'auto':
+                    best_p, best_d = find_best_promotion(cursor, total_amount, processed_items)
+                    if best_p and best_d > 0:
+                        promotion_id = best_p['id']
+                        promotion_code = best_p.get('code')
+                        promotion_discount = best_d
+                        discount = max(discount, best_d)
 
                 net_revenue = max(0, total_amount - discount)
                 vat_amount = round(net_revenue * (vat_percent / 100))
@@ -1512,24 +1948,25 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 code = generate_code('HD', 'orders', cursor)
 
                 cursor.execute("""
-                    INSERT INTO orders (code, customer_id, customer_name, total_amount, discount, net_revenue, vat_percent, vat_amount, final_amount, customer_paid, paid_amount, change_amount, debt_amount, payment_method, status, total_cost, profit, notes, created_at, user_id, user_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?)
-                """, (code, customer_id, customer_name, total_amount, discount, net_revenue, vat_percent, vat_amount, final_amount, customer_paid, actual_paid, change_amount, debt_amount, payment_method, total_cost, profit, notes, now, user['id'], user['full_name']))
+                    INSERT INTO orders (code, customer_id, customer_name, total_amount, discount, net_revenue, vat_percent, vat_amount, final_amount, customer_paid, paid_amount, change_amount, debt_amount, payment_method, status, total_cost, profit, notes, created_at, user_id, user_name, promotion_id, promotion_code, promotion_discount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (code, customer_id, customer_name, total_amount, discount, net_revenue, vat_percent, vat_amount, final_amount, customer_paid, actual_paid, change_amount, debt_amount, payment_method, order_status, total_cost, profit, notes, now, user['id'], user['full_name'], promotion_id, promotion_code, promotion_discount))
                 order_id = cursor.lastrowid
 
                 for it in processed_items:
                     cursor.execute("""
-                        INSERT INTO order_items (order_id, product_id, product_code, product_name, unit, quantity, cost_price, sale_price, is_custom_price, subtotal)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (order_id, it['product_id'], it['product_code'], it['product_name'], it['unit'], it['quantity'], it['cost_price'], it['sale_price'], 1 if it['is_custom_price'] else 0, it['subtotal']))
+                        INSERT INTO order_items (order_id, product_id, product_code, product_name, unit, quantity, cost_price, sale_price, is_custom_price, subtotal, unit_conversion_rate, is_gift)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (order_id, it['product_id'], it['product_code'], it['product_name'], it['unit'], it['quantity'], it['cost_price'], it['sale_price'], 1 if it['is_custom_price'] else 0, it['subtotal'], it['unit_conversion_rate'], it['is_gift']))
 
-                    new_stock = it['current_stock'] - it['quantity']
-                    cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
+                    if order_status == 'completed':
+                        new_stock = it['current_stock'] - it['base_qty']
+                        cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
 
-                    cursor.execute("""
-                        INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
-                        VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (it['product_id'], code, -it['quantity'], it['current_stock'], new_stock, f"Xuất bán theo hóa đơn {code}", now, user['id'], user['full_name']))
+                        cursor.execute("""
+                            INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
+                            VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (it['product_id'], code, -it['base_qty'], it['current_stock'], new_stock, f"Xuất bán theo hóa đơn {code} ({it['quantity']} {it['unit']})", now, user['id'], user['full_name']))
 
                     if it.get('save_as_custom') and customer_id and customer_id != 1:
                         cursor.execute("""
@@ -1542,23 +1979,33 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
 
                 if actual_paid > 0 and payment_method != 'debt':
                     rec_code = generate_code('PT', 'cash_flow', cursor)
+                    flow_cat = 'Bán hàng' if order_status == 'completed' else 'Đặt cọc đơn hàng'
                     cursor.execute("""
                         INSERT INTO cash_flow (code, type, category, amount, target_type, target_id, target_name, fund_type, reference_code, notes, created_at, user_id, user_name)
-                        VALUES (?, 'receipt', 'Bán hàng', ?, 'customer', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (rec_code, actual_paid, customer_id, customer_name, payment_method, code, f"Thu tiền bán hàng hóa đơn {code}", now, user['id'], user['full_name']))
+                        VALUES (?, 'receipt', ?, ?, 'customer', ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (rec_code, flow_cat, actual_paid, customer_id, customer_name, payment_method, code, f"Thu tiền {flow_cat.lower()} hóa đơn {code}", now, user['id'], user['full_name']))
 
                 if customer_id and customer_id != 1:
-                    cursor.execute("""
-                        UPDATE customers 
-                        SET debt = debt + ?, total_spent = total_spent + ?
-                        WHERE id = ?
-                    """, (debt_amount, final_amount, customer_id))
+                    if order_status == 'completed':
+                        cursor.execute("""
+                            UPDATE customers 
+                            SET debt = debt + ?, total_spent = total_spent + ?
+                            WHERE id = ?
+                        """, (debt_amount, final_amount, customer_id))
+                    else:
+                        if debt_amount > 0:
+                            cursor.execute("""
+                                UPDATE customers 
+                                SET debt = debt + ?
+                                WHERE id = ?
+                            """, (debt_amount, customer_id))
 
+                action_name = 'ORDER_CREATE' if order_status == 'completed' else 'PRE_ORDER_CREATE'
                 auth.log_audit(
                     cursor=cursor,
                     user_id=user['id'],
                     user_name=user['full_name'],
-                    action='ORDER_CREATE',
+                    action=action_name,
                     entity_type='order',
                     entity_id=order_id,
                     entity_code=code,
@@ -1572,7 +2019,8 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                         'actual_paid': actual_paid,
                         'change_amount': change_amount,
                         'debt_amount': debt_amount,
-                        'payment_method': payment_method
+                        'payment_method': payment_method,
+                        'status': order_status
                     },
                     ip_address=client_ip
                 )
@@ -1582,13 +2030,224 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     "id": order_id,
                     "code": code,
                     "total_amount": total_amount,
+                    "discount": discount,
                     "net_revenue": net_revenue,
                     "vat_amount": vat_amount,
                     "final_amount": final_amount,
                     "paid_amount": actual_paid,
                     "change_amount": change_amount,
-                    "debt_amount": debt_amount
+                    "debt_amount": debt_amount,
+                    "promotion_id": promotion_id,
+                    "promotion_code": promotion_code,
+                    "promotion_discount": promotion_discount,
+                    "status": order_status
                 }, 201)
+                return
+
+            # CLONE ORDER / DUPLICATE (Nhân bản hóa đơn sang POS)
+            if path.startswith('/api/orders/') and path.endswith('/clone'):
+                user, ok = self.require_auth('orders:create', conn=conn)
+                if not ok:
+                    return
+                order_id = path.split('/')[3]
+                cursor.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+                orig = row_to_dict(cursor.fetchone())
+                if not orig:
+                    self.send_error_json("Không tìm thấy đơn hàng để nhân bản", 404)
+                    return
+                cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                orig_items = rows_to_list(cursor.fetchall())
+                orig['items'] = orig_items
+                self.send_json({
+                    "order": orig,
+                    "items": orig_items
+                })
+                return
+
+            # INVOICE DUPLICATE: POST /api/invoices/:id/duplicate
+            if path.startswith('/api/invoices/') and path.endswith('/duplicate'):
+                user, ok = self.require_auth('invoice:manage', conn=conn)
+                if not ok:
+                    return
+                parts = path.split('/')
+                invoice_id = parts[3] if len(parts) > 3 else None
+                if not invoice_id:
+                    self.send_error_json("ID hóa đơn không hợp lệ", 400)
+                    return
+                cursor.execute("SELECT * FROM orders WHERE id = ?", (invoice_id,))
+                orig = row_to_dict(cursor.fetchone())
+                if not orig:
+                    self.send_error_json("Không tìm thấy hóa đơn để nhân bản", 404)
+                    return
+                cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (invoice_id,))
+                orig_items = rows_to_list(cursor.fetchall())
+                # Create a duplicate with today's date, status = draft
+                now = get_now_str()
+                new_code = generate_code('HD', 'orders', cursor)
+                cursor.execute("""
+                    INSERT INTO orders (code, customer_id, customer_name, total_amount, discount,
+                        net_revenue, vat_percent, vat_amount, final_amount, customer_paid,
+                        paid_amount, change_amount, debt_amount, payment_method, status,
+                        total_cost, profit, notes, created_at, user_id, user_name,
+                        promotion_id, promotion_code, promotion_discount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    new_code, orig.get('customer_id'), orig.get('customer_name'),
+                    orig.get('total_amount', 0), orig.get('discount', 0),
+                    orig.get('net_revenue', 0), orig.get('vat_percent', 0),
+                    orig.get('vat_amount', 0), orig.get('final_amount', 0),
+                    0, 0, 0, 0,
+                    orig.get('payment_method', 'cash'),
+                    orig.get('total_cost', 0), 0,
+                    f"Nhân bản từ {orig.get('code', '')}",
+                    now, user['id'], user['full_name'],
+                    None, None, 0
+                ))
+                new_order_id = cursor.lastrowid
+                for it in orig_items:
+                    cursor.execute("""
+                        INSERT INTO order_items (order_id, product_id, product_code, product_name,
+                            unit, quantity, cost_price, sale_price, is_custom_price, subtotal,
+                            unit_conversion_rate, is_gift)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        new_order_id, it.get('product_id'), it.get('product_code'),
+                        it.get('product_name'), it.get('unit'), it.get('quantity'),
+                        it.get('cost_price'), it.get('sale_price'), it.get('is_custom_price', 0),
+                        it.get('subtotal'), it.get('unit_conversion_rate', 1.0), it.get('is_gift', 0)
+                    ))
+                auth.log_audit(
+                    cursor=cursor,
+                    user_id=user['id'],
+                    user_name=user['full_name'],
+                    action='INVOICE_DUPLICATE',
+                    entity_type='order',
+                    entity_id=new_order_id,
+                    entity_code=new_code,
+                    details={'source_id': invoice_id, 'source_code': orig.get('code')},
+                    ip_address=client_ip
+                )
+                conn.commit()
+                self.send_json({"id": new_order_id, "code": new_code, "status": "draft"}, 201)
+                return
+
+            # EXPORT TO EXCEL (.xlsx)
+            if path == '/api/export/xlsx':
+                sheet_name = body.get('sheet_name', 'Báo cáo')
+                headers = body.get('headers', [])
+                rows = body.get('rows', [])
+                filename = body.get('filename', f"export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                if not filename.endswith('.xlsx'):
+                    filename += '.xlsx'
+
+                xlsx_bytes = create_xlsx(sheet_name, headers, rows)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+                self.send_header('Content-Length', str(len(xlsx_bytes)))
+                self.end_headers()
+                self.wfile.write(xlsx_bytes)
+                return
+
+            # PROMOTIONS BEST / CALCULATE
+            if path in ('/api/promotions/best', '/api/promotions/calculate'):
+                user, ok = self.require_auth('promotions:view', conn=conn)
+                if not ok:
+                    return
+                t_amt = float(body.get('total_amount', 0))
+                p_items = body.get('items', [])
+                best_promo, best_disc = find_best_promotion(cursor, t_amt, p_items)
+                self.send_json({
+                    "promotion": best_promo,
+                    "discount": best_disc,
+                    "applied": bool(best_promo and best_disc > 0)
+                })
+                return
+
+            # PROMOTIONS CREATE
+            if path == '/api/promotions':
+                user, ok = self.require_auth('promotions:manage', conn=conn)
+                if not ok:
+                    return
+                name = body.get('name', '').strip()
+                if not name:
+                    self.send_error_json("Tên chương trình khuyến mãi không được để trống", 400)
+                    return
+                p_type = body.get('type', 'percent')
+                code = body.get('code') or generate_code('KM', 'promotions', cursor)
+                min_order = float(body.get('min_order_amount', 0))
+                val = float(body.get('value', body.get('discount_value', 0)))
+                disc_val = val
+                target_pid = body.get('target_product_id')
+                gift_pid = body.get('gift_product_id')
+                buy_qty = float(body.get('buy_quantity', 0))
+                gift_qty = float(body.get('gift_quantity', 0))
+                start_date = body.get('start_date')
+                end_date = body.get('end_date')
+                notes = body.get('notes', '')
+                applicable = body.get('applicable_product_ids')
+                if isinstance(applicable, (list, tuple)):
+                    applicable_str = json.dumps(applicable)
+                elif applicable is not None:
+                    applicable_str = str(applicable)
+                else:
+                    applicable_str = None
+                now = get_now_str()
+
+                cursor.execute("""
+                    INSERT INTO promotions (code, name, type, value, discount_value, applicable_product_ids, min_order_amount, target_product_id, gift_product_id, buy_quantity, gift_quantity, start_date, end_date, is_active, notes, created_at, user_id, user_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                """, (code, name, p_type, val, disc_val, applicable_str, min_order, target_pid, gift_pid, buy_qty, gift_qty, start_date, end_date, notes, now, user['id'], user['full_name']))
+                promo_id = cursor.lastrowid
+
+                auth.log_audit(
+                    cursor=cursor,
+                    user_id=user['id'],
+                    user_name=user['full_name'],
+                    action='PROMOTION_CREATE',
+                    entity_type='promotion',
+                    entity_id=promo_id,
+                    entity_code=code,
+                    details={'name': name, 'type': p_type, 'discount_value': disc_val, 'value': val},
+                    ip_address=client_ip
+                )
+                conn.commit()
+
+                cursor.execute("SELECT * FROM promotions WHERE id = ?", (promo_id,))
+                res_promo = row_to_dict(cursor.fetchone())
+                if res_promo.get('value') is None:
+                    res_promo['value'] = res_promo.get('discount_value', 0)
+                if res_promo.get('discount_value') is None:
+                    res_promo['discount_value'] = res_promo.get('value', 0)
+                self.send_json(res_promo, 201)
+                return
+
+            # PROMOTION TOGGLE ACTIVE
+            if path.startswith('/api/promotions/') and path.endswith('/toggle'):
+                user, ok = self.require_auth('promotions:manage', conn=conn)
+                if not ok:
+                    return
+                promo_id = path.split('/')[3]
+                cursor.execute("SELECT * FROM promotions WHERE id = ?", (promo_id,))
+                promo = row_to_dict(cursor.fetchone())
+                if not promo:
+                    self.send_error_json("Không tìm thấy chương trình khuyến mãi", 404)
+                    return
+                new_state = 0 if promo['is_active'] else 1
+                cursor.execute("UPDATE promotions SET is_active = ? WHERE id = ?", (new_state, promo_id))
+                auth.log_audit(
+                    cursor=cursor,
+                    user_id=user['id'],
+                    user_name=user['full_name'],
+                    action='PROMOTION_TOGGLE',
+                    entity_type='promotion',
+                    entity_id=promo['id'],
+                    entity_code=promo['code'],
+                    details={'name': promo['name'], 'is_active': new_state},
+                    ip_address=client_ip
+                )
+                conn.commit()
+                self.send_json({"success": True, "is_active": new_state})
                 return
 
             # 11. BUSINESS: PURCHASES (Kho / Quản lý / Quản trị)
@@ -1640,19 +2299,24 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     if not p:
                         continue
 
+                    unit_conv = max(0.0001, float(it.get('unit_conversion_rate', 1.0)))
+                    unit_name = it.get('unit') or p['unit']
+                    base_qty = qty * unit_conv
+                    base_import_price = import_price / unit_conv
+
                     old_stock = p['stock']
                     old_cost = p['cost_price']
-                    new_stock = old_stock + qty
+                    new_stock = old_stock + base_qty
 
                     if new_stock > 0 and old_stock >= 0:
-                        new_cost = ((old_stock * old_cost) + (qty * import_price)) / new_stock
+                        new_cost = ((old_stock * old_cost) + (base_qty * base_import_price)) / new_stock
                     else:
-                        new_cost = import_price
+                        new_cost = base_import_price
 
                     cursor.execute("""
                         INSERT INTO purchase_items (purchase_id, product_id, product_code, product_name, unit, quantity, import_price, subtotal)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (pid, p['id'], p['code'], p['name'], p['unit'], qty, import_price, subtotal))
+                    """, (pid, p['id'], p['code'], p['name'], unit_name, qty, import_price, subtotal))
 
                     cursor.execute("""
                         UPDATE products
@@ -1660,10 +2324,16 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                         WHERE id = ?
                     """, (new_stock, round(new_cost, 2), now, p['id']))
 
+                    inv_note = f"Nhập kho theo phiếu {code}: {qty:g} {unit_name}"
+                    if unit_conv != 1.0:
+                        inv_note += f" (Quy đổi: +{base_qty:g} {p['unit']}, Giá vốn MAC: {new_cost:,.0f} đ/{p['unit']})"
+                    else:
+                        inv_note += f" (Giá vốn MAC: {new_cost:,.0f} đ)"
+
                     cursor.execute("""
                         INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
                         VALUES (?, 'input', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (p['id'], code, qty, old_stock, new_stock, f"Nhập kho theo phiếu {code} (Giá vốn MAC: {new_cost:,.0f} đ)", now, user['id'], user['full_name']))
+                    """, (p['id'], code, base_qty, old_stock, new_stock, inv_note, now, user['id'], user['full_name']))
 
                 if paid_amount > 0:
                     pay_code = generate_code('PC', 'cash_flow', cursor)
@@ -1760,22 +2430,31 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
 
                     qty = float(it['quantity'])
                     ret_price = float(it['return_price'])
+                    unit_conv = max(0.0001, float(it.get('unit_conversion_rate', 1.0)))
+                    unit_name = it.get('unit') or p['unit']
+                    base_qty = qty * unit_conv
                     cost_price = p['cost_price']
                     subtotal = qty * ret_price
 
                     cursor.execute("""
                         INSERT INTO return_items (return_id, product_id, product_name, unit, quantity, return_price, cost_price, subtotal)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (ret_id, p['id'], p['name'], p['unit'], qty, ret_price, cost_price, subtotal))
+                    """, (ret_id, p['id'], p['name'], unit_name, qty, ret_price, cost_price, subtotal))
 
                     old_stock = p['stock']
-                    new_stock = old_stock + qty
+                    new_stock = old_stock + base_qty
                     cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, p['id']))
+
+                    inv_note = f"Khách trả hàng theo phiếu {code}: {qty:g} {unit_name}"
+                    if unit_conv != 1.0:
+                        inv_note += f" (Quy đổi: +{base_qty:g} {p['unit']})"
+                    if order_code:
+                        inv_note += f" (HĐ gốc: {order_code})"
 
                     cursor.execute("""
                         INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
                         VALUES (?, 'return', ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (p['id'], code, qty, old_stock, new_stock, f"Khách trả hàng theo phiếu {code}" + (f" (HĐ gốc: {order_code})" if order_code else ""), now, user['id'], user['full_name']))
+                    """, (p['id'], code, base_qty, old_stock, new_stock, inv_note, now, user['id'], user['full_name']))
 
                 if refund_amount > 0:
                     pay_code = generate_code('PC', 'cash_flow', cursor)
@@ -1962,6 +2641,112 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": True, "message": "Đã lưu cài đặt cửa hàng"})
                 return
 
+            # 16. DATABASE RESTORE (Admin only)
+            if path == '/api/backup/restore':
+                user, ok = self.require_auth('backup:restore', conn=conn)
+                if not ok:
+                    return
+
+                raw_b64 = body.get('database_base64') or body.get('file_data') or body.get('data') or ''
+                if not raw_b64:
+                    self.send_error_json("Vui lòng cung cấp dữ liệu cơ sở dữ liệu để phục hồi", 400)
+                    return
+
+                if ',' in raw_b64:
+                    raw_b64 = raw_b64.split(',', 1)[1]
+
+                try:
+                    db_bytes = base64.b64decode(raw_b64)
+                except Exception:
+                    self.send_error_json("Dữ liệu tệp không đúng chuẩn mã hóa base64", 400)
+                    return
+
+                if len(db_bytes) < 100 or not db_bytes.startswith(b"SQLite format 3\x00"):
+                    self.send_error_json("Tệp tin không đúng định dạng cơ sở dữ liệu SQLite 3 hợp lệ", 400, "INVALID_SQLITE_FILE")
+                    return
+
+                # Write to temp file to verify SQLite integrity
+                temp_fd, temp_path = tempfile.mkstemp(suffix='.db')
+                try:
+                    with os.fdopen(temp_fd, 'wb') as f:
+                        f.write(db_bytes)
+
+                    import sqlite3
+                    check_conn = sqlite3.connect(temp_path)
+                    check_cursor = check_conn.cursor()
+                    check_cursor.execute("PRAGMA quick_check")
+                    res = check_cursor.fetchone()
+                    check_conn.close()
+                    if not res or res[0] != "ok":
+                        self.send_error_json("Tệp tin cơ sở dữ liệu bị hỏng (corrupted)", 400, "CORRUPT_SQLITE_FILE")
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                        return
+                except Exception as ex:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    self.send_error_json(f"Không thể đọc cơ sở dữ liệu: {str(ex)}", 400)
+                    return
+
+                # Backup current database safely
+                safety_backup_path = f"{DB_FILE}.pre_restore_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                try:
+                    if os.path.exists(DB_FILE):
+                        shutil.copy2(DB_FILE, safety_backup_path)
+                except Exception:
+                    pass
+
+                # Close current active DB connection before replacing file
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+                # Replace DB file with restored file
+                try:
+                    shutil.copy2(temp_path, DB_FILE)
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except Exception as e:
+                    self.send_error_json(f"Lỗi ghi đè cơ sở dữ liệu: {str(e)}", 500)
+                    return
+
+                # Run migrations on restored database
+                try:
+                    init_db()
+                except Exception:
+                    pass
+
+                # Reconnect and log audit
+                try:
+                    new_conn = get_db()
+                    new_cursor = new_conn.cursor()
+                    auth.log_audit(
+                        cursor=new_cursor,
+                        user_id=user['id'],
+                        user_name=user['full_name'],
+                        action='BACKUP_RESTORE',
+                        entity_type='system',
+                        entity_id=None,
+                        entity_code='backup',
+                        details={
+                            'message': 'Phục hồi thành công cơ sở dữ liệu SQLite',
+                            'bytes_restored': len(db_bytes),
+                            'safety_backup': safety_backup_path
+                        },
+                        ip_address=client_ip
+                    )
+                    new_conn.commit()
+                except Exception:
+                    pass
+
+                self.send_json({
+                    "success": True,
+                    "message": "Phục hồi cơ sở dữ liệu thành công! Bản dự phòng đã được lưu an toàn.",
+                    "safety_backup": safety_backup_path
+                })
+                return
+
             if path.startswith('/api/audit-logs'):
                 self.send_error_json("Không được phép sửa hoặc thêm dữ liệu vào nhật ký kiểm toán trực tiếp", 403, "FORBIDDEN")
                 return
@@ -2065,6 +2850,22 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     WHERE id = ?
                 """, (name, category, unit, sub_unit, sub_unit_ratio, sale_price, cost_price, min_stock, barcode, now, pid))
 
+                units_input = body.get('units')
+                if units_input is not None:
+                    cursor.execute("DELETE FROM product_units WHERE product_id = ?", (pid,))
+                    for u in units_input:
+                        u_name = u.get('unit_name', '').strip()
+                        if u_name:
+                            u_rate = float(u.get('conversion_rate', 1))
+                            u_sale = float(u.get('sale_price', sale_price * u_rate))
+                            u_cost = float(u.get('cost_price', cost_price * u_rate))
+                            u_barcode = u.get('barcode', '')
+                            u_is_base = 1 if u.get('is_base') else 0
+                            cursor.execute("""
+                                INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, barcode, is_base, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (pid, u_name, u_rate, u_sale, u_cost, u_barcode, u_is_base, now))
+
                 auth.log_audit(
                     cursor=cursor,
                     user_id=user['id'],
@@ -2165,6 +2966,224 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(row_to_dict(cursor.fetchone()))
                 return
 
+            # 5. UPDATE ORDER (Điều chỉnh đơn hàng / hóa đơn)
+            # invoice:manage and orders:manage both accepted; invoices path requires invoice:manage
+            if path.startswith('/api/orders/') or path.startswith('/api/invoices/'):
+                perm_needed = 'invoice:manage' if path.startswith('/api/invoices/') else 'orders:manage'
+                user, ok = self.require_auth(perm_needed, conn=conn)
+                if not ok:
+                    return
+                order_id = int(path.split('/')[3])
+                cursor.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+                orig_order = row_to_dict(cursor.fetchone())
+                if not orig_order:
+                    self.send_error_json("Không tìm thấy đơn hàng để chỉnh sửa", 404)
+                    return
+                if orig_order['status'] == 'cancelled':
+                    self.send_error_json("Không thể chỉnh sửa đơn hàng đã bị hủy", 400)
+                    return
+
+                new_notes = body.get('notes', orig_order['notes'])
+                new_status = body.get('status', orig_order['status'])
+                now = get_now_str()
+
+                # Customer update
+                new_customer_id = body.get('customer_id', orig_order.get('customer_id'))
+                new_customer_name = body.get('customer_name', orig_order.get('customer_name'))
+                if 'customer_id' in body and body['customer_id']:
+                    cursor.execute("SELECT id, name FROM customers WHERE id = ?", (body['customer_id'],))
+                    c_row = cursor.fetchone()
+                    if c_row:
+                        new_customer_id = c_row['id']
+                        if 'customer_name' not in body:
+                            new_customer_name = c_row['name']
+
+                discount = max(0.0, float(body.get('discount', orig_order.get('discount', 0) or 0)))
+                vat_percent = max(0.0, float(body.get('vat_percent', orig_order.get('vat_percent', 0) or 0)))
+
+                # Line-items update and recalculation
+                if 'items' in body and isinstance(body['items'], list):
+                    raw_items = body['items']
+                    total_amount = 0.0
+                    total_cost = 0.0
+                    processed_items = []
+                    for it in raw_items:
+                        pid = it['product_id']
+                        cursor.execute("SELECT * FROM products WHERE id = ?", (pid,))
+                        p = cursor.fetchone()
+                        if not p:
+                            self.send_error_json(f"Sản phẩm ID {pid} không tồn tại", 400)
+                            return
+                        qty = float(it.get('quantity', 1))
+                        conv = float(it.get('unit_conversion_rate', 1.0))
+                        sale_price = float(it.get('sale_price', p['sale_price']))
+                        cost_price = float(it.get('cost_price', p['cost_price'] * conv))
+                        is_gift = 1 if it.get('is_gift') else 0
+                        subtotal = 0.0 if is_gift else float(it.get('subtotal', qty * sale_price))
+                        total_amount += subtotal
+                        total_cost += qty * cost_price
+                        processed_items.append({
+                            "product_id": p['id'],
+                            "product_code": p['code'],
+                            "product_name": p['name'],
+                            "unit": it.get('unit', p['unit']),
+                            "unit_conversion_rate": conv,
+                            "quantity": qty,
+                            "cost_price": cost_price,
+                            "sale_price": sale_price,
+                            "is_custom_price": 1 if it.get('is_custom_price') else 0,
+                            "subtotal": subtotal,
+                            "is_gift": is_gift
+                        })
+
+                    # If original order was completed, adjust stock differences
+                    if orig_order['status'] == 'completed':
+                        cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                        for old_it in cursor.fetchall():
+                            old_conv = old_it['unit_conversion_rate'] or 1.0
+                            old_base = old_it['quantity'] * old_conv
+                            cursor.execute("UPDATE products SET stock = stock + ?, updated_at = ? WHERE id = ?", (old_base, now, old_it['product_id']))
+                        for new_it in processed_items:
+                            base_q = new_it['quantity'] * new_it['unit_conversion_rate']
+                            cursor.execute("SELECT stock FROM products WHERE id = ?", (new_it['product_id'],))
+                            cur_s = cursor.fetchone()['stock']
+                            new_s = cur_s - base_q
+                            cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_s, now, new_it['product_id']))
+                            cursor.execute("""
+                                INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
+                                VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (new_it['product_id'], orig_order['code'], -base_q, cur_s, new_s, f"Điều chỉnh mặt hàng hóa đơn {orig_order['code']}", now, user['id'], user['full_name']))
+
+                    # Replace order_items
+                    cursor.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+                    for it in processed_items:
+                        cursor.execute("""
+                            INSERT INTO order_items (order_id, product_id, product_code, product_name, unit, quantity, cost_price, sale_price, is_custom_price, subtotal, unit_conversion_rate, is_gift)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (order_id, it['product_id'], it['product_code'], it['product_name'], it['unit'], it['quantity'], it['cost_price'], it['sale_price'], it['is_custom_price'], it['subtotal'], it['unit_conversion_rate'], it['is_gift']))
+                else:
+                    total_amount = float(orig_order.get('total_amount', 0))
+                    total_cost = float(orig_order.get('total_cost', 0))
+
+                # Recalculate totals server-side
+                net_revenue = max(0.0, total_amount - discount)
+                vat_amount = round(net_revenue * (vat_percent / 100.0))
+                final_amount = net_revenue + vat_amount
+                customer_paid = float(body.get('customer_paid', body.get('paid_amount', orig_order.get('customer_paid') or orig_order.get('paid_amount', 0))))
+                paid_amount = min(customer_paid, final_amount)
+                change_amount = max(0.0, customer_paid - final_amount)
+                debt_amount = max(0.0, final_amount - paid_amount)
+                profit = net_revenue - total_cost
+
+                # Transition ordered/draft -> completed
+                if orig_order['status'] in ('ordered', 'draft') and new_status == 'completed':
+                    cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                    for it in cursor.fetchall():
+                        conv = it['unit_conversion_rate'] or 1.0
+                        base_qty = it['quantity'] * conv
+                        cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
+                        cur_stock = cursor.fetchone()['stock']
+                        new_stock = cur_stock - base_qty
+                        cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
+                        cursor.execute("""
+                            INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
+                            VALUES (?, 'output', ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (it['product_id'], orig_order['code'], -base_qty, cur_stock, new_stock, f"Xuất bán khi hoàn thành đơn đặt {orig_order['code']}", now, user['id'], user['full_name']))
+                    if new_customer_id and new_customer_id != 1:
+                        cursor.execute("UPDATE customers SET debt = debt + ?, total_spent = total_spent + ? WHERE id = ?", (debt_amount, final_amount, new_customer_id))
+                elif orig_order['status'] == 'completed' and new_status == 'completed':
+                    # Revert previous debt/spent and apply new
+                    old_cid = orig_order.get('customer_id')
+                    old_debt = orig_order.get('debt_amount', 0) or 0
+                    old_spent = orig_order.get('final_amount', 0) or 0
+                    if old_cid and old_cid != 1:
+                        cursor.execute("UPDATE customers SET debt = MAX(0, debt - ?), total_spent = MAX(0, total_spent - ?) WHERE id = ?", (old_debt, old_spent, old_cid))
+                    if new_customer_id and new_customer_id != 1:
+                        cursor.execute("UPDATE customers SET debt = debt + ?, total_spent = total_spent + ? WHERE id = ?", (debt_amount, final_amount, new_customer_id))
+
+                cursor.execute("""
+                    UPDATE orders
+                    SET notes = ?, customer_id = ?, customer_name = ?, status = ?,
+                        total_amount = ?, discount = ?, net_revenue = ?, vat_percent = ?,
+                        vat_amount = ?, final_amount = ?, paid_amount = ?, customer_paid = ?,
+                        change_amount = ?, debt_amount = ?, total_cost = ?, profit = ?
+                    WHERE id = ?
+                """, (new_notes, new_customer_id, new_customer_name, new_status,
+                      total_amount, discount, net_revenue, vat_percent,
+                      vat_amount, final_amount, paid_amount, customer_paid,
+                      change_amount, debt_amount, total_cost, profit, order_id))
+
+                auth.log_audit(
+                    cursor=cursor,
+                    user_id=user['id'],
+                    user_name=user['full_name'],
+                    action='ORDER_UPDATE',
+                    entity_type='order',
+                    entity_id=order_id,
+                    entity_code=orig_order['code'],
+                    details={'notes': new_notes, 'status': new_status, 'final_amount': final_amount, 'previous_status': orig_order['status']},
+                    ip_address=client_ip
+                )
+                conn.commit()
+                self.send_json({"success": True, "id": order_id, "total_amount": total_amount, "final_amount": final_amount, "message": f"Đã cập nhật đơn hàng {orig_order['code']}"})
+                return
+
+            # 6. UPDATE PROMOTION
+            if path.startswith('/api/promotions/'):
+                user, ok = self.require_auth('promotions:manage', conn=conn)
+                if not ok:
+                    return
+                promo_id = int(path.split('/')[3])
+                cursor.execute("SELECT * FROM promotions WHERE id = ?", (promo_id,))
+                orig_promo = row_to_dict(cursor.fetchone())
+                if not orig_promo:
+                    self.send_error_json("Không tìm thấy chương trình khuyến mãi", 404)
+                    return
+
+                name = body.get('name', orig_promo['name'])
+                p_type = body.get('type', orig_promo['type'])
+                min_order = float(body.get('min_order_amount', orig_promo['min_order_amount']))
+                val = float(body.get('value', body.get('discount_value', orig_promo.get('value') or orig_promo.get('discount_value', 0))))
+                disc_val = val
+                target_pid = body.get('target_product_id', orig_promo['target_product_id'])
+                gift_pid = body.get('gift_product_id', orig_promo['gift_product_id'])
+                buy_qty = float(body.get('buy_quantity', orig_promo['buy_quantity']))
+                gift_qty = float(body.get('gift_quantity', orig_promo['gift_quantity']))
+                start_date = body.get('start_date', orig_promo['start_date'])
+                end_date = body.get('end_date', orig_promo['end_date'])
+                notes = body.get('notes', orig_promo['notes'])
+                is_active = int(body.get('is_active', orig_promo['is_active']))
+                applicable = body.get('applicable_product_ids', orig_promo.get('applicable_product_ids'))
+                if isinstance(applicable, (list, tuple)):
+                    applicable_str = json.dumps(applicable)
+                elif applicable is not None:
+                    applicable_str = str(applicable)
+                else:
+                    applicable_str = None
+
+                cursor.execute("""
+                    UPDATE promotions
+                    SET name = ?, type = ?, value = ?, discount_value = ?, applicable_product_ids = ?,
+                        min_order_amount = ?, target_product_id = ?, gift_product_id = ?, buy_quantity = ?,
+                        gift_quantity = ?, start_date = ?, end_date = ?, notes = ?, is_active = ?
+                    WHERE id = ?
+                """, (name, p_type, val, disc_val, applicable_str, min_order, target_pid, gift_pid, buy_qty, gift_qty, start_date, end_date, notes, is_active, promo_id))
+
+                auth.log_audit(
+                    cursor=cursor,
+                    user_id=user['id'],
+                    user_name=user['full_name'],
+                    action='PROMOTION_UPDATE',
+                    entity_type='promotion',
+                    entity_id=promo_id,
+                    entity_code=orig_promo['code'],
+                    details={'name': name, 'type': p_type, 'discount_value': disc_val, 'value': val},
+                    ip_address=client_ip
+                )
+                conn.commit()
+                self.send_json({"success": True, "message": "Đã cập nhật chương trình khuyến mãi"})
+                return
+
             self.send_error_json("Endpoint not found", 404)
 
         except Exception as e:
@@ -2205,6 +3224,8 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 cursor.execute("SELECT code, name FROM products WHERE id = ?", (pid,))
                 p = cursor.fetchone()
                 if p:
+                    cursor.execute("DELETE FROM product_units WHERE product_id = ?", (pid,))
+                    cursor.execute("DELETE FROM customer_product_prices WHERE product_id = ?", (pid,))
                     cursor.execute("DELETE FROM products WHERE id = ?", (pid,))
                     auth.log_audit(
                         cursor=cursor,
@@ -2267,6 +3288,108 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     )
                     conn.commit()
                 self.send_json({"success": True})
+                return
+
+            # DELETE / CANCEL ORDER (Hủy / Xóa hóa đơn)
+            if path.startswith('/api/orders/') or path.startswith('/api/invoices/'):
+                perm_needed = 'invoice:manage' if path.startswith('/api/invoices/') else 'orders:manage'
+                user, ok = self.require_auth(perm_needed, conn=conn)
+                if not ok:
+                    return
+                order_id = int(path.split('/')[3])
+                cursor.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+                order = row_to_dict(cursor.fetchone())
+                if not order:
+                    self.send_error_json("Không tìm thấy đơn hàng cần hủy", 404)
+                    return
+                if order['status'] == 'cancelled':
+                    self.send_error_json("Đơn hàng này đã được hủy trước đó", 400)
+                    return
+
+                now = get_now_str()
+
+                # If order was completed, revert inventory stock, customer debt, and cash flow
+                if order['status'] == 'completed':
+                    cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
+                    items = cursor.fetchall()
+                    for it in items:
+                        conv = it['unit_conversion_rate'] or 1.0
+                        base_qty = it['quantity'] * conv
+                        cursor.execute("SELECT stock FROM products WHERE id = ?", (it['product_id'],))
+                        cur_stock = cursor.fetchone()['stock']
+                        new_stock = cur_stock + base_qty
+                        cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
+                        cursor.execute("""
+                            INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
+                            VALUES (?, 'adjustment', ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (it['product_id'], order['code'], base_qty, cur_stock, new_stock, f"Hoàn tồn do hủy hóa đơn {order['code']}", now, user['id'], user['full_name']))
+
+                    # Revert customer debt & total_spent if order had customer
+                    if order['customer_id'] and order['customer_id'] != 1:
+                        debt_revert = order['debt_amount'] or 0
+                        spent_revert = order['final_amount'] or 0
+                        cursor.execute("""
+                            UPDATE customers
+                            SET debt = MAX(0, debt - ?), total_spent = MAX(0, total_spent - ?)
+                            WHERE id = ?
+                        """, (debt_revert, spent_revert, order['customer_id']))
+
+                    # Revert cash flow if payment was recorded
+                    if order['paid_amount'] > 0 and order['payment_method'] != 'debt':
+                        revert_pc = generate_code('PC', 'cash_flow', cursor)
+                        cursor.execute("""
+                            INSERT INTO cash_flow (code, type, category, amount, target_type, target_id, target_name, fund_type, reference_code, notes, created_at, user_id, user_name)
+                            VALUES (?, 'payment', 'Hoàn tiền bán hàng', ?, 'customer', ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (revert_pc, order['paid_amount'], order['customer_id'], order['customer_name'], order['payment_method'], order['code'], f"Hoàn tiền do hủy hóa đơn {order['code']}", now, user['id'], user['full_name']))
+
+                    # Mark status as cancelled
+                    cursor.execute("UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,))
+                elif order['status'] == 'draft':
+                    # Draft orders can be cascade deleted
+                    cursor.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+                    cursor.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+                else:
+                    # Ordered status
+                    cursor.execute("UPDATE orders SET status = 'cancelled' WHERE id = ?", (order_id,))
+
+                auth.log_audit(
+                    cursor=cursor,
+                    user_id=user['id'],
+                    user_name=user['full_name'],
+                    action='ORDER_CANCEL',
+                    entity_type='order',
+                    entity_id=order_id,
+                    entity_code=order['code'],
+                    details={'message': f"Hủy hóa đơn {order['code']}", 'order_amount': order['final_amount']},
+                    ip_address=client_ip
+                )
+                conn.commit()
+                self.send_json({"success": True, "message": f"Đã hủy thành công hóa đơn {order['code']}"})
+                return
+
+            # DELETE PROMOTION
+            if path.startswith('/api/promotions/'):
+                user, ok = self.require_auth('promotions:manage', conn=conn)
+                if not ok:
+                    return
+                promo_id = int(path.split('/')[3])
+                cursor.execute("SELECT code, name FROM promotions WHERE id = ?", (promo_id,))
+                pr = cursor.fetchone()
+                if pr:
+                    cursor.execute("DELETE FROM promotions WHERE id = ?", (promo_id,))
+                    auth.log_audit(
+                        cursor=cursor,
+                        user_id=user['id'],
+                        user_name=user['full_name'],
+                        action='PROMOTION_DELETE',
+                        entity_type='promotion',
+                        entity_id=promo_id,
+                        entity_code=pr['code'],
+                        details={'deleted_promotion': pr['name']},
+                        ip_address=client_ip
+                    )
+                    conn.commit()
+                self.send_json({"success": True, "message": "Đã xóa chương trình khuyến mãi"})
                 return
 
             self.send_error_json("Endpoint not found", 404)

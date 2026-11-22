@@ -42,26 +42,29 @@ ROLES = {
 # Principle: Deny by default. If a role lacks a permission, request is blocked with HTTP 403.
 ROLE_PERMISSIONS = {
     'admin': {
-        'users:manage', 'settings:manage', 'backup:download', 'audit:view',
-        'reports:view', 'orders:create', 'orders:view',
+        'users:manage', 'settings:manage', 'backup:download', 'backup:restore', 'audit:view',
+        'reports:view', 'orders:create', 'orders:view', 'orders:manage',
         'purchases:create', 'purchases:view', 'returns:create', 'returns:view',
         'inventory:adjust', 'inventory:view', 'products:manage', 'products:view',
         'products:view_cost', 'customers:manage', 'customers:view',
         'suppliers:manage', 'suppliers:view', 'cash_flow:manage', 'cash_flow:view',
-        'debt:manage'
+        'debt:manage', 'promotions:manage', 'promotions:view',
+        'invoice:manage', 'export', 'customer:read', 'promotion:manage'
     },
     'manager': {
-        'audit:view', 'reports:view', 'orders:create', 'orders:view',
+        'audit:view', 'reports:view', 'orders:create', 'orders:view', 'orders:manage',
         'purchases:create', 'purchases:view', 'returns:create', 'returns:view',
         'inventory:adjust', 'inventory:view', 'products:manage', 'products:view',
         'products:view_cost', 'customers:manage', 'customers:view',
         'suppliers:manage', 'suppliers:view', 'cash_flow:manage', 'cash_flow:view',
-        'debt:manage'
+        'debt:manage', 'promotions:manage', 'promotions:view',
+        'invoice:manage', 'export', 'customer:read', 'promotion:manage'
     },
     'cashier': {
         'orders:create', 'orders:view', 'returns:create', 'returns:view',
         'products:view',
-        'customers:manage', 'customers:view'
+        'customers:manage', 'customers:view', 'customer:read',
+        'promotions:view'
     },
     'warehouse': {
         'purchases:create', 'purchases:view', 'inventory:adjust', 'inventory:view',
@@ -71,11 +74,13 @@ ROLE_PERMISSIONS = {
     'accountant': {
         'reports:view', 'orders:view', 'purchases:view', 'returns:view',
         'cash_flow:manage', 'cash_flow:view', 'debt:manage',
-        'customers:view', 'suppliers:view', 'products:view', 'products:view_cost'
+        'customers:view', 'customer:read', 'suppliers:view', 'products:view', 'products:view_cost',
+        'promotions:view'
     },
     'viewer': {
         'orders:view', 'purchases:view', 'returns:view',
-        'products:view', 'customers:view', 'suppliers:view', 'inventory:view'
+        'products:view', 'customers:view', 'customer:read', 'suppliers:view', 'inventory:view',
+        'promotions:view'
     }
 }
 
@@ -84,7 +89,18 @@ def has_permission(role, permission):
     if not role:
         return False
     perms = ROLE_PERMISSIONS.get(role, set())
-    return permission in perms
+    if permission in perms:
+        return True
+    aliases = {
+        'customer:read': 'customers:view',
+        'customers:view': 'customer:read',
+        'promotion:manage': 'promotions:manage',
+        'promotions:manage': 'promotion:manage',
+        'invoice:manage': 'orders:manage',
+    }
+    if permission in aliases and aliases[permission] in perms:
+        return True
+    return False
 
 # Password Hashing using PBKDF2-HMAC-SHA256 (Python Standard Library)
 def hash_password(password: str) -> str:
