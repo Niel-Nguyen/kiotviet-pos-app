@@ -13,11 +13,10 @@ const App = {
   userPermissions: new Set(),
   auditPage: 1,
   auditLimit: 25,
-  ordersPage: 1,
-  ordersLimit: 15,
-  currentColumnSelectorView: null,
 
   VIEW_PERMISSIONS: {
+    'orders': 'orders:view',
+    'promotions': 'promotions:view',
     'users': 'users:manage',
     'settings': 'settings:manage',
     'audit': 'audit:view',
@@ -29,25 +28,13 @@ const App = {
     'suppliers': 'suppliers:view',
     'products': 'products:view',
     'pos': 'orders:create',
-    'orders': 'orders:view',
-    'promotions': 'promotions:view',
     'dashboard': null
   },
 
-  escapeHtml(str) {
-    if (str === null || str === undefined) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  },
-
   async init() {
-    window.escapeHtml = this.escapeHtml;
     this.setupNavigation();
     this.setupModals();
+    this.updateUserUI();
     await this.initAuth();
 
     // F9 shortcut to switch to POS
@@ -93,6 +80,67 @@ const App = {
     }, 3800);
   },
 
+  removeVietnameseTones(str) {
+    if (!str) return '';
+    str = String(str);
+    str = str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    str = str.replace(/[đĐ]/g, m => m === 'đ' ? 'd' : 'D');
+    return str.toLowerCase().trim();
+  },
+
+  matchesSearch(item, query, fields = []) {
+    if (!query) return true;
+    const cleanQ = this.removeVietnameseTones(query);
+    const qTerms = cleanQ.split(/\s+/).filter(Boolean);
+    let candidateText = '';
+    for (const f of fields) {
+      if (item[f] !== undefined && item[f] !== null) {
+        candidateText += ' ' + String(item[f]);
+      }
+    }
+    const cleanCandidate = this.removeVietnameseTones(candidateText);
+    return qTerms.every(term => cleanCandidate.includes(term));
+  },
+
+  normalizeOrders(res) {
+    if (Array.isArray(res)) return res;
+    if (res && typeof res === 'object') {
+      if (Array.isArray(res.orders)) return res.orders;
+      if (Array.isArray(res.invoices)) return res.invoices;
+      if (Array.isArray(res.data)) return res.data;
+      if (Array.isArray(res.items)) return res.items;
+      if (Array.isArray(res.rows)) return res.rows;
+      if (Array.isArray(res.result)) return res.result;
+    }
+    return [];
+  },
+
+  async exportTableToExcel(headers, rows, sheetName, filename) {
+    try {
+      this.toast('Đang khởi tạo tệp Excel (.xlsx)...', 'info');
+      await API.exportXlsx({
+        title: sheetName,
+        sheet_name: sheetName.substring(0, 31),
+        filename: filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`,
+        headers: headers,
+        rows: rows
+      });
+      this.toast(`Đã xuất tệp ${filename} thành công!`, 'success');
+    } catch (err) {
+      this.toast(`Lỗi xuất Excel: ${err.message}`, 'error');
+    }
+  },
+
+  async exportTable(tableName) {
+    try {
+      this.toast(`Đang xuất dữ liệu '${tableName}' ra file Excel...`, 'info');
+      await API.exportTable(tableName);
+      this.toast(`Đã xuất bảng '${tableName}' ra file Excel thành công!`, 'success');
+    } catch (err) {
+      this.toast(`Lỗi xuất Excel: ${err.message}`, 'error');
+    }
+  },
+
   async loadTopFundSummary() {
     try {
       if (this.hasPermission && !this.hasPermission('cash_flow:view')) {
@@ -100,10 +148,26 @@ const App = {
         if (elem) elem.textContent = '***';
         return;
       }
-      const stats = await API.getDashboardStats();
+      let balance = null;
+      if (typeof API.getFundSummary === 'function') {
+        try {
+          const fundRes = await API.getFundSummary();
+          if (fundRes && (fundRes.overall_total_balance !== undefined || fundRes.total_balance !== undefined || fundRes.current_balance !== undefined)) {
+            balance = fundRes.overall_total_balance !== undefined ? fundRes.overall_total_balance : (fundRes.current_balance !== undefined ? fundRes.current_balance : fundRes.total_balance);
+          }
+        } catch (e) {
+          // fallback to getDashboardStats below
+        }
+      }
+      if (balance === null && typeof API.getDashboardStats === 'function') {
+        const stats = await API.getDashboardStats();
+        if (stats) {
+          balance = stats.cash_balance !== undefined ? stats.cash_balance : (stats.funds ? stats.funds.total_balance : 0);
+        }
+      }
       const elem = document.getElementById('top-fund-balance');
-      if (elem && stats) {
-        elem.textContent = this.formatMoney(stats.cash_balance !== undefined ? stats.cash_balance : (stats.funds ? stats.funds.total_balance : 0));
+      if (elem && balance !== null && balance !== undefined) {
+        elem.textContent = this.formatMoney(balance);
       }
     } catch (e) {
       console.warn('Could not load fund balance', e);
@@ -144,17 +208,19 @@ const App = {
   },
 
   setupModals() {
-    document.querySelectorAll('[data-close-modal]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const modalId = btn.getAttribute('data-close-modal');
+    document.addEventListener('click', (e) => {
+      const closeBtn = e.target.closest('[data-close-modal]');
+      if (closeBtn) {
+        const modalId = closeBtn.getAttribute('data-close-modal');
         const modal = document.getElementById(modalId);
         if (modal) modal.classList.remove('active');
-      });
+      }
     });
 
     document.querySelectorAll('.modal-overlay').forEach(modal => {
       modal.addEventListener('click', (e) => {
         if (e.target === modal) {
+          if (modal.id === 'auth-modal') return;
           modal.classList.remove('active');
         }
       });
@@ -175,6 +241,8 @@ const App = {
     const titles = {
       'dashboard': 'Tổng quan kinh doanh',
       'pos': 'Bán hàng tại quầy (POS)',
+      'orders': 'Quản lý Hóa đơn & Đơn đặt hàng',
+      'promotions': 'Quản lý Chương trình Khuyến mãi',
       'products': 'Quản lý Hàng hóa & Tồn kho',
       'purchases': 'Quản lý Nhập hàng (Nhà cung cấp)',
       'customers': 'Quản lý Khách hàng & Bảng giá riêng',
@@ -184,9 +252,7 @@ const App = {
       'reports': 'Báo cáo doanh thu & Lợi nhuận',
       'settings': 'Cài đặt hệ thống & Sao lưu',
       'audit': 'Nhật ký hoạt động & Truy vết kiểm toán',
-      'users': 'Quản lý Nhân viên & Phân quyền',
-      'orders': 'Quản lý Hóa đơn & Đơn bán',
-      'promotions': 'Chương trình Khuyến mãi & Chiết khấu'
+      'users': 'Quản lý Nhân viên & Phân quyền'
     };
 
     const titleElem = document.getElementById('page-title-text');
@@ -222,6 +288,12 @@ const App = {
       case 'pos':
         POS.init();
         break;
+      case 'orders':
+        this.renderOrdersView();
+        break;
+      case 'promotions':
+        this.renderPromotionsView();
+        break;
       case 'products':
         this.renderProductsView();
         break;
@@ -252,12 +324,6 @@ const App = {
       case 'users':
         this.renderUsersView();
         break;
-      case 'orders':
-        this.renderOrdersView();
-        break;
-      case 'promotions':
-        this.renderPromotionsView();
-        break;
     }
   },
 
@@ -268,12 +334,41 @@ const App = {
     const container = document.getElementById('view-dashboard');
     if (!container) return;
 
+    if (this.currentUser && this.userPermissions && this.userPermissions.size > 0 && !this.userPermissions.has('reports:view')) {
+      container.innerHTML = this.renderAccessDenied('reports:view');
+      return;
+    }
+
     try {
-      const data = await API.getDashboardStats(this.dashboardRange);
-      const today = data.today || {};
-      const inv = data.inventory || {};
-      const debt = data.debt || {};
-      const funds = data.funds || {};
+      const data = (await API.getDashboardStats(this.dashboardRange)) || {};
+      const today = {
+        today_revenue: data.today?.today_revenue ?? data.today_revenue ?? 0,
+        today_profit: data.today?.today_profit ?? data.today_profit ?? 0,
+        today_orders: data.today?.today_orders ?? data.today_orders ?? 0,
+        returns_total: data.today?.returns_total ?? data.today_returns ?? data.returns_total ?? 0
+      };
+      const inv = {
+        total_inventory_cost: data.inventory?.total_inventory_cost ?? data.inventory?.inventory_value ?? data.inventory_value ?? 0,
+        total_products: data.inventory?.total_products ?? data.total_products ?? 0,
+        total_stock_items: data.inventory?.total_stock_items ?? data.total_stock_items ?? (data.inventory?.total_products ?? data.total_products ?? 0)
+      };
+      const debt = {
+        receivables: data.debt?.receivables ?? data.debt?.customer_debt ?? data.customer_debt ?? data.receivables ?? 0,
+        payables: data.debt?.payables ?? data.debt?.supplier_debt ?? data.supplier_debt ?? data.payables ?? 0
+      };
+      const funds = {
+        total_balance: data.funds?.total_balance ?? data.funds?.balance ?? data.cash_balance ?? data.total_balance ?? 0,
+        cash_balance: data.funds?.cash_balance ?? data.funds?.drawer_cash ?? data.drawer_cash ?? data.cash_balance ?? 0,
+        bank_balance: data.funds?.bank_balance ?? data.bank_balance ?? 0
+      };
+
+      const lowStockList = data.low_stock || data.low_stock_products || [];
+      const rawTopProducts = data.top_products || [];
+      const topProductsList = (Array.isArray(rawTopProducts) ? rawTopProducts : []).map(p => ({
+        ...p,
+        total_quantity: p.total_quantity !== undefined ? p.total_quantity : (p.sold_qty || 0),
+        total_sales: p.total_sales !== undefined ? p.total_sales : (p.sold_amount || 0)
+      }));
 
       const rangeLabels = {
         'today': 'Hôm nay',
@@ -281,6 +376,10 @@ const App = {
         '7days': '7 ngày qua',
         'this_month': 'Tháng này'
       };
+
+      const formattedStockItems = typeof inv.total_stock_items === 'number'
+        ? inv.total_stock_items.toLocaleString('vi-VN')
+        : (inv.total_stock_items || 0);
 
       container.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
@@ -326,7 +425,7 @@ const App = {
             <div class="stat-info">
               <p>Giá trị kho hàng (MAC)</p>
               <h3>${this.formatMoney(inv.total_inventory_cost || 0)}</h3>
-              <small>${inv.total_products || 0} sản phẩm (${inv.total_stock_items || 0} tồn)</small>
+              <small>${inv.total_products || 0} sản phẩm (${formattedStockItems} tồn)</small>
             </div>
           </div>
 
@@ -402,14 +501,14 @@ const App = {
                   </tr>
                 </thead>
                 <tbody>
-                  ${(data.top_products || []).length > 0 ? (data.top_products || []).map(p => `
+                  ${topProductsList.length > 0 ? topProductsList.map(p => `
                     <tr>
                       <td>
                         <strong style="color: var(--color-text-main);">${p.name}</strong><br>
                         <small style="color: var(--color-text-subtle);">${p.code}</small>
                       </td>
                       <td class="text-center">
-                        <span class="badge-tag badge-blue">${p.total_quantity} ${p.unit}</span>
+                        <span class="badge-tag badge-blue">${typeof p.total_quantity === 'number' ? p.total_quantity.toLocaleString('vi-VN') : (p.total_quantity || 0)} ${p.unit || ''}</span>
                       </td>
                       <td class="text-right tabular-nums font-bold">${this.formatMoney(p.total_sales)}</td>
                     </tr>
@@ -427,7 +526,7 @@ const App = {
           <div class="card-header" style="background-color: var(--color-danger-subtle); border-color: var(--color-danger-border);">
             <div class="card-title" style="color: var(--color-danger-text);">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
-              <span>Cảnh báo tồn kho an toàn (${(data.low_stock || []).length})</span>
+              <span>Cảnh báo tồn kho an toàn (${lowStockList.length})</span>
             </div>
             <button class="btn btn-sm btn-primary" onclick="App.openCreatePurchaseModal()">+ Nhập hàng ngay</button>
           </div>
@@ -447,7 +546,7 @@ const App = {
                   </tr>
                 </thead>
                 <tbody>
-                  ${(data.low_stock || []).length > 0 ? (data.low_stock || []).map(p => `
+                  ${lowStockList.length > 0 ? lowStockList.map(p => `
                     <tr>
                       <td><code>${p.code}</code></td>
                       <td><strong>${p.name}</strong></td>
@@ -485,19 +584,22 @@ const App = {
 
   renderBarChart(trendData) {
     if (!trendData || trendData.length === 0) return '<div class="empty-state">Chưa có số liệu</div>';
-    const maxVal = Math.max(...trendData.map(d => Math.max(d.revenue, d.profit, 1000000)));
+    const maxVal = Math.max(...trendData.map(d => Math.max(d.revenue || 0, Math.abs(d.profit || 0), 1000000)));
 
     return trendData.map(d => {
-      const revHeight = Math.max(8, (d.revenue / maxVal) * 180);
-      const profitHeight = Math.max(4, (d.profit / maxVal) * 180);
+      const rev = Number(d.revenue) || 0;
+      const prof = Number(d.profit) || 0;
+      const revHeight = rev > 0 ? Math.max(8, Math.round((rev / maxVal) * 180)) : 2;
+      const profitHeight = prof !== 0 ? Math.max(4, Math.round((Math.abs(prof) / maxVal) * 180)) : 2;
+      const profitColor = prof < 0 ? 'var(--color-danger)' : 'var(--color-success)';
 
       return `
         <div style="flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end;">
           <div style="display: flex; gap: 4px; align-items: flex-end;">
-            <div style="width: 14px; height: ${revHeight}px; background-color: var(--color-primary); border-radius: 3px 3px 0 0;" title="Doanh thu: ${this.formatMoney(d.revenue)}"></div>
-            <div style="width: 14px; height: ${profitHeight}px; background-color: var(--color-success); border-radius: 3px 3px 0 0;" title="Lợi nhuận: ${this.formatMoney(d.profit)}"></div>
+            <div style="width: 14px; height: ${revHeight}px; background-color: var(--color-primary); border-radius: 3px 3px 0 0;" title="Doanh thu: ${this.formatMoney(rev)}"></div>
+            <div style="width: 14px; height: ${profitHeight}px; background-color: ${profitColor}; border-radius: 3px 3px 0 0;" title="Lợi nhuận: ${this.formatMoney(prof)}"></div>
           </div>
-          <div style="font-size: 0.72rem; color: var(--color-text-subtle); margin-top: 6px; font-weight: 600;">${d.display_date}</div>
+          <div style="font-size: 0.72rem; color: var(--color-text-subtle); margin-top: 6px; font-weight: 600;">${d.display_date || ''}</div>
         </div>
       `;
     }).join('');
@@ -512,9 +614,14 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+        <div class="card-header">
           <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
-            <input type="text" id="prod-search-input" class="form-control" style="max-width: 280px;" placeholder="Tìm theo tên, mã SKU, mã vạch...">
+            <input type="text" id="prod-search-input" class="form-control" style="max-width: 280px;" placeholder="Tìm theo tên, mã SKU, barcode...">
+            <select id="prod-search-by" class="form-control" style="max-width: 140px;">
+              <option value="both">Code & Name</option>
+              <option value="code">Code</option>
+              <option value="name">Name</option>
+            </select>
             <select id="prod-cat-filter" class="form-control" style="max-width: 170px;">
               <option value="">Tất cả danh mục</option>
             </select>
@@ -523,8 +630,10 @@ const App = {
             </label>
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.openColumnSelector('products')">Chọn cột</button>
-            <button class="btn btn-outline" onclick="App.exportExcel('products')">Xuất Excel</button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportTable('products')" title="Xuất file Excel danh mục hàng hóa">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
             <button class="btn btn-primary" onclick="App.openCreateProductModal()">+ Thêm hàng hóa</button>
           </div>
         </div>
@@ -536,16 +645,17 @@ const App = {
                   <th>Mã SP / Barcode</th>
                   <th>Tên hàng hóa</th>
                   <th>Danh mục</th>
-                  <th>Đơn vị tính</th>
-                  <th>Quy đổi đóng gói</th>
+                  <th>ĐVT cơ bản</th>
+                  <th>Quy đổi & Tồn chi tiết</th>
                   <th class="text-right">Giá vốn (MAC)</th>
                   <th class="text-right">Giá bán</th>
-                  <th class="text-center">Tồn kho & Quy đổi</th>
+                  <th class="text-center">Tồn kho cơ bản</th>
+                  <th class="text-center">Đang đặt</th>
                   <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="products-table-body">
-                <tr><td colspan="9" class="empty-state">Đang tải danh mục hàng hóa...</td></tr>
+                <tr><td colspan="10" class="empty-state">Đang tải danh mục hàng hóa...</td></tr>
               </tbody>
             </table>
           </div>
@@ -556,52 +666,54 @@ const App = {
     try {
       const cats = await API.getCategories();
       const catSelect = document.getElementById('prod-cat-filter');
-      cats.forEach(c => {
-        const opt = document.createElement('option');
-        opt.value = c;
-        opt.textContent = c;
-        catSelect.appendChild(opt);
-      });
+      if (catSelect && Array.isArray(cats)) {
+        cats.forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c;
+          opt.textContent = c;
+          catSelect.appendChild(opt);
+        });
+      }
     } catch (e) {
       console.warn("Could not load categories", e);
     }
 
-    document.getElementById('prod-search-input').addEventListener('input', () => this.loadProductsTable());
-    document.getElementById('prod-cat-filter').addEventListener('change', () => this.loadProductsTable());
-    document.getElementById('prod-low-stock-filter').addEventListener('change', () => this.loadProductsTable());
+    document.getElementById('prod-search-input')?.addEventListener('input', () => this.loadProductsTable());
+    document.getElementById('prod-search-by')?.addEventListener('change', () => this.loadProductsTable());
+    document.getElementById('prod-cat-filter')?.addEventListener('change', () => this.loadProductsTable());
+    document.getElementById('prod-low-stock-filter')?.addEventListener('change', () => this.loadProductsTable());
 
     this.loadProductsTable();
   },
 
   async loadProductsTable() {
     const q = document.getElementById('prod-search-input')?.value || '';
+    const searchBy = document.getElementById('prod-search-by')?.value || 'both';
     const cat = document.getElementById('prod-cat-filter')?.value || '';
     const lowStock = document.getElementById('prod-low-stock-filter')?.checked || false;
 
     try {
-      const products = await API.getProducts({ q, category: cat, low_stock: lowStock });
+      const products = await API.getProducts({ q, search: q, searchBy, category: cat, low_stock: lowStock });
       const tbody = document.getElementById('products-table-body');
       if (!tbody) return;
 
-      if (products.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Không tìm thấy hàng hóa phù hợp</td></tr>`;
+      let filtered = products;
+      if (q) {
+        if (searchBy === 'code') {
+          filtered = filtered.filter(p => this.matchesSearch(p, q, ['code', 'barcode']));
+        } else if (searchBy === 'name') {
+          filtered = filtered.filter(p => this.matchesSearch(p, q, ['name']));
+        } else {
+          filtered = filtered.filter(p => this.matchesSearch(p, q, ['name', 'code', 'barcode', 'category']));
+        }
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-state">Không tìm thấy hàng hóa phù hợp</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = products.map(p => {
-        let packagingUnitsHtml = '';
-        if (p.units && p.units.length > 1) {
-          packagingUnitsHtml = p.units
-            .filter(u => !u.is_base)
-            .map(u => `<span class="unit-tag-pill">${u.name} (x${u.conversion_rate})</span>`)
-            .join(' ');
-        } else if (p.sub_unit) {
-          packagingUnitsHtml = `<small style="color: var(--color-text-muted);">1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit}</small>`;
-        } else {
-          packagingUnitsHtml = '<span style="color: var(--color-text-disabled);">---</span>';
-        }
-
-        return `
+      tbody.innerHTML = filtered.map(p => `
         <tr>
           <td>
             <strong>${p.code}</strong><br>
@@ -612,101 +724,295 @@ const App = {
           </td>
           <td><span class="badge-tag badge-blue">${p.category || 'Chung'}</span></td>
           <td><strong>${p.unit}</strong></td>
-          <td>${packagingUnitsHtml}</td>
-          <td class="text-right tabular-nums">${p.cost_price ? this.formatMoney(p.cost_price) : '***'}</td>
+          <td>
+            ${p.stock_breakdown ? `<div class="breakdown-badge" title="Tồn kho chi tiết theo đơn vị">${p.stock_breakdown}</div>` : ''}
+            ${p.units && p.units.length > 1 ? `
+              <div style="font-size: 0.75rem; color: #64748b; margin-top: 2px;">
+                ${p.units.map(u => `${u.unit_name}${u.conversion_rate > 1 ? ` (x${u.conversion_rate})` : ''}`).join(' · ')}
+              </div>
+            ` : (p.sub_unit ? `<small style="color: var(--color-text-muted);">1 ${p.unit} = ${p.sub_unit_ratio} ${p.sub_unit}</small>` : '<span style="color: var(--color-text-disabled);">---</span>')}
+          </td>
+          <td class="text-right tabular-nums">${this.formatMoney(p.cost_price)}</td>
           <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(p.sale_price)}</td>
           <td class="text-center">
             <span class="badge-tag ${p.stock <= p.min_stock ? 'badge-red' : 'badge-green'}">
               ${p.stock} ${p.unit}
             </span>
-            ${p.stock_breakdown && p.stock_breakdown !== `${p.stock} ${p.unit}` ? `
-              <div style="font-size: 0.75rem; color: var(--color-primary); font-weight: 600; margin-top: 3px;">
-                ${p.stock_breakdown}
-              </div>
-            ` : ''}
           </td>
-          <td class="text-right">
-            <div style="display: flex; gap: 4px; justify-content: flex-end;">
-              <button class="btn btn-sm btn-outline" onclick="App.openProductUnitsModal(${p.id})" title="Quy đổi đơn vị tính">Đơn vị</button>
-              <button class="btn btn-sm btn-outline" onclick="App.openStockLogsModal(${p.id})" title="Thẻ kho">Thẻ kho</button>
-              <button class="btn btn-sm btn-outline" onclick="App.openAdjustStockModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.stock})" title="Kiểm kho">Kiểm kho</button>
-              <button class="btn btn-sm btn-outline" onclick="App.openEditProductModal(${p.id})" title="Sửa">Sửa</button>
-            </div>
+          <td class="text-center">
+            ${p.ordered_qty > 0 ? `<span class="badge-tag badge-amber" title="Số lượng khách đặt trước chưa xuất kho">${p.ordered_qty} ${p.unit}</span>` : '<span style="color: var(--color-text-disabled);">0</span>'}
+          </td>
+          <td class="text-right" style="white-space: nowrap;">
+            <button class="btn btn-sm btn-outline" onclick="App.openStockLogsModal(${p.id})" title="Thẻ kho">Thẻ kho</button>
+            <button class="btn btn-sm btn-outline" onclick="App.openAdjustStockModal(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.stock}, '${p.unit}', '${(p.stock_breakdown || '').replace(/'/g, "\\'")}')" title="Kiểm kho">Kiểm kho</button>
+            <button class="btn btn-sm btn-outline" onclick="App.openEditProductModal(${p.id})" title="Sửa">Sửa</button>
+            <button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.deleteProduct(${p.id})" title="Xóa">Xóa</button>
+            <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('product', '${p.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
-      `;
-      }).join('');
+      `).join('');
     } catch (err) {
       App.toast('Không thể tải sản phẩm: ' + err.message, 'error');
     }
   },
 
-  openCreateProductModal() {
-    const modal = document.getElementById('product-modal');
-    document.getElementById('product-modal-title').textContent = 'Thêm hàng hóa mới';
-    document.getElementById('prod-id').value = '';
-    document.getElementById('prod-code').value = '';
-    document.getElementById('prod-barcode').value = '';
-    document.getElementById('prod-name').value = '';
-    document.getElementById('prod-category').value = 'Chung';
-    document.getElementById('prod-unit').value = 'Cái';
-    document.getElementById('prod-sub-unit').value = '';
-    document.getElementById('prod-sub-unit-ratio').value = '1';
-    document.getElementById('prod-cost-price').value = '0';
-    document.getElementById('prod-sale-price').value = '0';
-    document.getElementById('prod-stock').value = '0';
-    document.getElementById('prod-stock').disabled = false;
-    document.getElementById('prod-min-stock').value = '5';
-    modal.classList.add('active');
-  },
-
-  async openEditProductModal(id) {
+  async exportProductsExcel() {
     try {
       const products = await API.getProducts();
-      const p = products.find(x => x.id === id);
-      if (!p) return;
+      const headers = ['Mã SKU', 'Mã vạch (Barcode)', 'Tên hàng hóa', 'Danh mục', 'ĐVT cơ bản', 'Quy đổi chi tiết', 'Tồn kho cơ bản', 'Phân rã tồn kho', 'Khách đang đặt', 'Giá vốn (MAC)', 'Giá bán'];
+      const rows = products.map(p => {
+        let convStr = '';
+        if (p.units && p.units.length > 0) {
+          convStr = p.units.map(u => `${u.unit_name} (x${u.conversion_rate})`).join(', ');
+        }
+        return [
+          p.code,
+          p.barcode || '',
+          p.name,
+          p.category || 'Chung',
+          p.unit,
+          convStr,
+          p.stock,
+          p.stock_breakdown || `${p.stock} ${p.unit}`,
+          p.ordered_qty || 0,
+          p.cost_price,
+          p.sale_price
+        ];
+      });
+      await this.exportTableToExcel(headers, rows, 'DanhSachHangHoa', 'danh_sach_hang_hoa.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel hàng hóa: ' + err.message, 'error');
+    }
+  },
 
+  addUnitRow(unit = null) {
+    const tbody = document.getElementById('product-units-tbody');
+    if (!tbody) return;
+
+    const uName = unit ? (unit.unit_name || '') : '';
+    const uRate = (unit && unit.conversion_rate !== null && unit.conversion_rate !== undefined) ? unit.conversion_rate : '';
+    const uPrice = (unit && unit.sale_price !== null && unit.sale_price !== undefined) ? unit.sale_price : '';
+    const uBarcode = unit ? (unit.barcode || '') : '';
+
+    const escapeAttr = (str) => String(str ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const tr = document.createElement('tr');
+    tr.className = 'unit-row-item';
+    tr.innerHTML = `
+      <td>
+        <input type="text" class="form-control form-control-sm unit-name-input" placeholder="Ví dụ: Lốc, Thùng..." value="${escapeAttr(uName)}">
+      </td>
+      <td>
+        <input type="number" step="any" min="0.001" class="form-control form-control-sm unit-rate-input" placeholder="Ví dụ: 6 hoặc 36" value="${escapeAttr(uRate)}">
+      </td>
+      <td>
+        <input type="number" step="any" min="0" class="form-control form-control-sm unit-price-input" placeholder="Giá bán..." value="${escapeAttr(uPrice)}">
+      </td>
+      <td>
+        <input type="text" class="form-control form-control-sm unit-barcode-input" placeholder="Barcode riêng..." value="${escapeAttr(uBarcode)}">
+      </td>
+      <td style="text-align: center;">
+        <button type="button" class="btn btn-sm btn-outline" onclick="App.removeUnitRow(this)" title="Xóa dòng" style="color: #ef4444; padding: 2px 6px;">✕</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  },
+
+  removeUnitRow(btn) {
+    const row = btn?.closest('tr');
+    if (row) row.remove();
+  },
+
+  syncBaseUnitName(name) {
+    // Base unit sync callback
+  },
+
+  openCreateProductModal() {
+    try {
       const modal = document.getElementById('product-modal');
-      document.getElementById('product-modal-title').textContent = 'Chỉnh sửa: ' + p.name;
-      document.getElementById('prod-id').value = p.id;
-      document.getElementById('prod-code').value = p.code;
-      document.getElementById('prod-barcode').value = p.barcode || '';
-      document.getElementById('prod-name').value = p.name;
-      document.getElementById('prod-category').value = p.category || 'Chung';
-      document.getElementById('prod-unit').value = p.unit || 'Cái';
-      document.getElementById('prod-sub-unit').value = p.sub_unit || '';
-      document.getElementById('prod-sub-unit-ratio').value = p.sub_unit_ratio || 1;
-      document.getElementById('prod-cost-price').value = p.cost_price;
-      document.getElementById('prod-sale-price').value = p.sale_price;
-      document.getElementById('prod-stock').value = p.stock;
-      document.getElementById('prod-stock').disabled = true;
-      document.getElementById('prod-min-stock').value = p.min_stock;
+      if (!modal) return;
+      const titleEl = document.getElementById('product-modal-title');
+      if (titleEl) titleEl.textContent = 'Thêm hàng hóa mới';
+
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = (val !== null && val !== undefined) ? val : '';
+      };
+
+      setVal('prod-id', '');
+      setVal('prod-code', '');
+      setVal('prod-barcode', '');
+      setVal('prod-name', '');
+      setVal('prod-category', 'Chung');
+      setVal('prod-unit', 'Cái');
+      setVal('prod-sub-unit', '');
+      setVal('prod-sub-unit-ratio', '1');
+      setVal('prod-cost-price', '0');
+      setVal('prod-sale-price', '0');
+      setVal('prod-stock', '0');
+      const stockEl = document.getElementById('prod-stock');
+      if (stockEl) stockEl.disabled = false;
+      setVal('prod-min-stock', '5');
+
+      const tbody = document.getElementById('product-units-tbody');
+      if (tbody) tbody.innerHTML = '';
+
       modal.classList.add('active');
     } catch (e) {
       App.toast('Lỗi mở form sản phẩm: ' + e.message, 'error');
     }
   },
 
+  async openEditProductModal(id) {
+    try {
+      if (id === undefined || id === null || id === '') {
+        App.toast('Mã sản phẩm không hợp lệ', 'warning');
+        return;
+      }
+
+      const products = await API.getProducts();
+      const list = Array.isArray(products) ? products : (products && Array.isArray(products.data) ? products.data : []);
+      const p = list.find(x => x && (x.id === id || String(x.id) === String(id)));
+      if (!p) {
+        App.toast('Không tìm thấy thông tin sản phẩm', 'warning');
+        return;
+      }
+
+      const modal = document.getElementById('product-modal');
+      if (!modal) return;
+      const titleEl = document.getElementById('product-modal-title');
+      if (titleEl) titleEl.textContent = 'Chỉnh sửa: ' + (p.name || '');
+
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = (val !== null && val !== undefined) ? val : '';
+      };
+
+      setVal('prod-id', p.id);
+      setVal('prod-code', p.code || '');
+      setVal('prod-barcode', p.barcode || '');
+      setVal('prod-name', p.name || '');
+      setVal('prod-category', p.category || 'Chung');
+      setVal('prod-unit', p.unit || 'Cái');
+      setVal('prod-sub-unit', p.sub_unit || '');
+      setVal('prod-sub-unit-ratio', p.sub_unit_ratio || 1);
+      setVal('prod-cost-price', p.cost_price ?? 0);
+      setVal('prod-sale-price', p.sale_price ?? 0);
+      setVal('prod-stock', p.stock ?? 0);
+      const stockEl = document.getElementById('prod-stock');
+      if (stockEl) stockEl.disabled = true;
+      setVal('prod-min-stock', p.min_stock ?? 5);
+
+      const tbody = document.getElementById('product-units-tbody');
+      if (tbody) {
+        tbody.innerHTML = '';
+        const unitsList = Array.isArray(p.units) ? p.units : [];
+        let addedNonBase = false;
+        if (unitsList.length > 0) {
+          unitsList.forEach(u => {
+            if (!u.is_base && Number(u.conversion_rate) !== 1.0) {
+              App.addUnitRow(u);
+              addedNonBase = true;
+            }
+          });
+        }
+        // Fallback for legacy v2 products where sub_unit was stored in products table without product_units row
+        if (!addedNonBase && p.sub_unit && parseFloat(p.sub_unit_ratio) > 1) {
+          App.addUnitRow({
+            unit_name: p.sub_unit,
+            conversion_rate: p.sub_unit_ratio,
+            sale_price: Math.round((p.sale_price || 0) * (p.sub_unit_ratio || 1)),
+            barcode: ''
+          });
+        }
+      }
+
+      modal.classList.add('active');
+    } catch (e) {
+      App.toast('Lỗi mở form sản phẩm: ' + e.message, 'error');
+    }
+  },
+
+  // Aliases for opening / editing product modal
+  openProductModal(id) {
+    if (id !== undefined && id !== null && id !== '') {
+      return App.openEditProductModal(id);
+    } else {
+      return App.openCreateProductModal();
+    }
+  },
+
+  editProduct(id) {
+    return App.openEditProductModal(id);
+  },
+
   async saveProductForm() {
-    const id = document.getElementById('prod-id').value;
-    const name = document.getElementById('prod-name').value.trim();
+    const getVal = (id, fallback = '') => {
+      const el = document.getElementById(id);
+      return el ? el.value : fallback;
+    };
+
+    const id = getVal('prod-id').trim();
+    const name = getVal('prod-name').trim();
     if (!name) {
       App.toast('Tên sản phẩm không được để trống', 'warning');
       return;
     }
 
+    const baseUnit = getVal('prod-unit').trim() || 'Cái';
+    const baseSalePrice = parseFloat(getVal('prod-sale-price', '0')) || 0;
+    const prodBarcode = getVal('prod-barcode').trim();
+
+    // Assemble multi-tier units
+    const units = [
+      {
+        unit_name: baseUnit,
+        conversion_rate: 1.0,
+        is_base: 1,
+        sale_price: baseSalePrice,
+        barcode: prodBarcode
+      }
+    ];
+
+    const unitRows = document.querySelectorAll('#product-units-tbody tr.unit-row-item');
+    unitRows.forEach(r => {
+      const uName = r.querySelector('.unit-name-input')?.value.trim();
+      const uRate = parseFloat(r.querySelector('.unit-rate-input')?.value) || 0;
+      const uPrice = parseFloat(r.querySelector('.unit-price-input')?.value) || 0;
+      const uBarcode = r.querySelector('.unit-barcode-input')?.value.trim() || '';
+      if (uName && uRate > 0) {
+        units.push({
+          unit_name: uName,
+          conversion_rate: uRate,
+          is_base: 0,
+          sale_price: uPrice > 0 ? uPrice : (baseSalePrice * uRate),
+          barcode: uBarcode
+        });
+      }
+    });
+
+    // Secondary packaging unit is derived from units[1], keeping DOM hidden inputs in sync
+    const subUnitVal = units[1] ? units[1].unit_name : '';
+    const subUnitRatioVal = units[1] ? units[1].conversion_rate : 1;
+
+    const subUnitEl = document.getElementById('prod-sub-unit');
+    if (subUnitEl) subUnitEl.value = subUnitVal;
+    const subUnitRatioEl = document.getElementById('prod-sub-unit-ratio');
+    if (subUnitRatioEl) subUnitRatioEl.value = subUnitRatioVal;
+
     const payload = {
-      code: document.getElementById('prod-code').value.trim(),
-      barcode: document.getElementById('prod-barcode').value.trim(),
+      code: getVal('prod-code').trim(),
+      barcode: prodBarcode,
       name: name,
-      category: document.getElementById('prod-category').value.trim(),
-      unit: document.getElementById('prod-unit').value.trim(),
-      sub_unit: document.getElementById('prod-sub-unit').value.trim(),
-      sub_unit_ratio: parseFloat(document.getElementById('prod-sub-unit-ratio').value) || 1,
-      cost_price: parseFloat(document.getElementById('prod-cost-price').value) || 0,
-      sale_price: parseFloat(document.getElementById('prod-sale-price').value) || 0,
-      stock: parseFloat(document.getElementById('prod-stock').value) || 0,
-      min_stock: parseFloat(document.getElementById('prod-min-stock').value) || 5
+      category: getVal('prod-category').trim(),
+      unit: baseUnit,
+      units: units,
+      sub_unit: subUnitVal,
+      sub_unit_ratio: subUnitRatioVal,
+      cost_price: parseFloat(getVal('prod-cost-price', '0')) || 0,
+      sale_price: baseSalePrice,
+      stock: parseFloat(getVal('prod-stock', '0')) || 0,
+      min_stock: parseFloat(getVal('prod-min-stock', '5')) || 5
     };
 
     try {
@@ -717,8 +1023,8 @@ const App = {
         await API.createProduct(payload);
         App.toast('Thêm hàng hóa mới thành công', 'success');
       }
-      document.getElementById('product-modal').classList.remove('active');
-      this.loadProductsTable();
+      document.getElementById('product-modal')?.classList.remove('active');
+      App.loadProductsTable();
     } catch (err) {
       App.toast('Lỗi lưu sản phẩm: ' + err.message, 'error');
     }
@@ -764,14 +1070,36 @@ const App = {
     }
   },
 
-  openAdjustStockModal(productId, productName, currentStock) {
+  openAdjustStockModal(productId, productName, currentStock, unit = '', stockBreakdown = '') {
     const modal = document.getElementById('adjust-modal');
     document.getElementById('adjust-product-id').value = productId;
     document.getElementById('adjust-product-name').textContent = productName;
-    document.getElementById('adjust-current-stock').textContent = currentStock;
+    document.getElementById('adjust-current-stock').textContent = `${currentStock} ${unit}`;
+    const breakdownElem = document.getElementById('adjust-stock-breakdown');
+    if (breakdownElem) {
+      if (stockBreakdown) {
+        breakdownElem.innerHTML = `<span class="breakdown-badge" style="background: var(--color-bg); padding: 3px 8px; border-radius: 4px; font-size: 0.82rem; border: 1px solid var(--color-border); display: inline-block;">Phân rã: <strong>${stockBreakdown}</strong></span>`;
+      } else {
+        breakdownElem.innerHTML = '';
+      }
+    }
     document.getElementById('adjust-actual-stock').value = currentStock;
     document.getElementById('adjust-notes').value = 'Kiểm kho định kỳ';
     modal.classList.add('active');
+  },
+
+  async deleteProduct(id) {
+    if (!confirm('Bạn có chắc chắn muốn xóa sản phẩm này? Hệ thống sẽ ghi nhận vào nhật ký kiểm toán.')) return;
+    try {
+      await API.deleteProduct(id);
+      App.toast('Đã xóa sản phẩm thành công', 'success');
+      this.loadProductsTable();
+      if (typeof POS !== 'undefined' && POS.loadProducts) {
+        await POS.loadProducts();
+      }
+    } catch (err) {
+      App.toast('Lỗi xóa sản phẩm: ' + err.message, 'error');
+    }
   },
 
   async saveAdjustStock() {
@@ -801,20 +1129,24 @@ const App = {
   // ==========================================
   // 3. PURCHASES VIEW (Goods Receipt)
   // ==========================================
+  // ==========================================
+  // 3. PURCHASES (NHẬP HÀNG) VIEW
+  // ==========================================
   async renderPurchasesView() {
     const container = document.getElementById('view-purchases');
     if (!container) return;
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
-          <div class="card-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>
-            <span>Danh sách phiếu nhập hàng từ Nhà cung cấp</span>
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="purch-search-input" class="form-control" style="max-width: 300px;" placeholder="Tìm theo mã phiếu, nhà cung cấp...">
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.openColumnSelector('purchases')">Chọn cột</button>
-            <button class="btn btn-outline" onclick="App.exportExcel('purchases')">Xuất Excel</button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportPurchasesExcel()" title="Xuất file Excel danh sách nhập hàng">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
             <button class="btn btn-primary" onclick="App.openCreatePurchaseModal()">+ Tạo phiếu nhập hàng</button>
           </div>
         </div>
@@ -843,17 +1175,28 @@ const App = {
       </div>
     `;
 
+    document.getElementById('purch-search-input')?.addEventListener('input', () => this.loadPurchasesTable());
+    this.loadPurchasesTable();
+  },
+
+  async loadPurchasesTable() {
+    const q = document.getElementById('purch-search-input')?.value || '';
     try {
       const purchases = await API.getPurchases();
       const tbody = document.getElementById('purchases-table-body');
       if (!tbody) return;
 
-      if (purchases.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Chưa có phiếu nhập hàng nào</td></tr>`;
+      let filtered = purchases;
+      if (q) {
+        filtered = filtered.filter(p => this.matchesSearch(p, q, ['code', 'supplier_name', 'notes']));
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Chưa có phiếu nhập hàng phù hợp</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = purchases.map(p => `
+      tbody.innerHTML = filtered.map(p => `
         <tr>
           <td><strong>${p.code}</strong></td>
           <td>${p.created_at}</td>
@@ -865,13 +1208,35 @@ const App = {
             ${this.formatMoney(p.debt_amount)}
           </td>
           <td class="text-center"><span class="badge-tag badge-green">Hoàn tất</span></td>
-          <td class="text-right">
+          <td class="text-right" style="white-space: nowrap;">
             <button class="btn btn-sm btn-outline" onclick="App.viewPurchaseDetail(${p.id})">Chi tiết</button>
+            <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('purchase', '${p.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
       `).join('');
     } catch (err) {
       App.toast('Lỗi tải phiếu nhập: ' + err.message, 'error');
+    }
+  },
+
+  async exportPurchasesExcel() {
+    try {
+      const purchases = await API.getPurchases();
+      const headers = ['Mã phiếu nhập', 'Thời gian', 'Nhà cung cấp', 'Số mặt hàng', 'Tổng tiền hàng (VNĐ)', 'Đã trả NCC (VNĐ)', 'Còn nợ NCC (VNĐ)', 'Trạng thái', 'Ghi chú'];
+      const rows = purchases.map(p => [
+        p.code,
+        p.created_at,
+        p.supplier_name || 'Nhà cung cấp',
+        p.item_count || 0,
+        p.final_amount || 0,
+        p.paid_amount || 0,
+        p.debt_amount || 0,
+        'Hoàn tất',
+        p.notes || ''
+      ]);
+      await this.exportTableToExcel(headers, rows, 'DanhSachNhapHang', 'danh_sach_nhap_hang.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel nhập hàng: ' + err.message, 'error');
     }
   },
 
@@ -893,6 +1258,22 @@ const App = {
       App.toast('Không thể tải nhà cung cấp: ' + e.message, 'error');
     }
 
+    const prodSelect = document.getElementById('purch-prod-select');
+    if (prodSelect) {
+      prodSelect.innerHTML = '<option value="">-- Chọn sản phẩm để thêm vào phiếu --</option>';
+      try {
+        const prods = await API.getProducts();
+        prods.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `${p.name} (${p.code}) - Tồn: ${p.stock} ${p.unit}`;
+          prodSelect.appendChild(opt);
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
     this.purchaseDraftItems = [];
     this.renderPurchaseDraftItems();
   },
@@ -904,6 +1285,15 @@ const App = {
     }, 200);
   },
 
+  addSelectedProductToPurchase() {
+    const sel = document.getElementById('purch-prod-select');
+    if (!sel || !sel.value) {
+      App.toast('Vui lòng chọn sản phẩm trong danh sách trước', 'warning');
+      return;
+    }
+    this.addDraftItemToPurchase(parseInt(sel.value));
+  },
+
   async addDraftItemToPurchase(productId) {
     if (!productId) return;
     try {
@@ -911,7 +1301,22 @@ const App = {
       const p = prods.find(x => x.id == productId);
       if (!p) return;
 
-      const existing = this.purchaseDraftItems.find(i => i.product_id == p.id);
+      const availableUnits = [
+        { unit_name: p.unit, conversion_rate: 1.0, cost_price: p.cost_price || 0 }
+      ];
+      if (p.units && Array.isArray(p.units)) {
+        p.units.forEach(u => {
+          if (!availableUnits.some(au => au.unit_name.toLowerCase() === u.unit_name.toLowerCase())) {
+            availableUnits.push({
+              unit_name: u.unit_name,
+              conversion_rate: u.conversion_rate || 1.0,
+              cost_price: u.cost_price || (p.cost_price * (u.conversion_rate || 1.0))
+            });
+          }
+        });
+      }
+
+      const existing = this.purchaseDraftItems.find(i => i.product_id == p.id && i.unit == p.unit);
       if (existing) {
         existing.quantity += 1;
       } else {
@@ -919,8 +1324,11 @@ const App = {
           product_id: p.id,
           code: p.code,
           name: p.name,
+          base_unit: p.unit,
           unit: p.unit,
-          quantity: 10,
+          unit_conversion_rate: 1.0,
+          available_units: availableUnits,
+          quantity: 1,
           import_price: p.cost_price || 0
         });
       }
@@ -935,36 +1343,70 @@ const App = {
     if (!container) return;
 
     if (this.purchaseDraftItems.length === 0) {
-      container.innerHTML = '<tr><td colspan="6" class="empty-state">Chưa chọn sản phẩm nhập kho. Nhấn "+ Thêm sản phẩm nhập kho" bên trên.</td></tr>';
+      container.innerHTML = '<tr><td colspan="6" class="empty-state">Chưa chọn sản phẩm nhập kho. Chọn sản phẩm từ danh mục rồi nhấn "+ Thêm vào phiếu".</td></tr>';
       this.updatePurchaseDraftTotals();
       return;
     }
 
-    container.innerHTML = this.purchaseDraftItems.map((item, idx) => `
-      <tr>
-        <td><strong>${item.name}</strong><br><small style="color: var(--color-text-subtle); font-family: var(--font-mono);">${item.code}</small></td>
-        <td>${item.unit}</td>
-        <td>
-          <input type="number" class="form-control" style="width: 80px;" value="${item.quantity}" min="1" onchange="App.updatePurchaseItemQty(${idx}, this.value)">
-        </td>
-        <td>
-          <input type="number" class="form-control" style="width: 130px;" value="${item.import_price}" min="0" onchange="App.updatePurchaseItemPrice(${idx}, this.value)">
-        </td>
-        <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">
-          ${this.formatMoney(item.quantity * item.import_price)}
-        </td>
-        <td>
-          <button class="btn btn-sm btn-outline" onclick="App.removePurchaseItem(${idx})" style="color: var(--color-danger);">✕</button>
-        </td>
-      </tr>
-    `).join('');
+    container.innerHTML = this.purchaseDraftItems.map((item, idx) => {
+      let unitHtml = `<span>${item.unit}</span>`;
+      if (item.available_units && item.available_units.length > 1) {
+        unitHtml = `
+          <select class="form-control form-control-sm" style="font-weight: 600; min-width: 90px;" onchange="App.updatePurchaseItemUnit(${idx}, this.value)">
+            ${item.available_units.map(u => `
+              <option value="${u.unit_name}" ${u.unit_name === item.unit ? 'selected' : ''}>
+                ${u.unit_name} ${u.conversion_rate !== 1.0 ? `(x${u.conversion_rate})` : ''}
+              </option>
+            `).join('')}
+          </select>
+        `;
+      }
+
+      return `
+        <tr>
+          <td>
+            <strong>${item.name}</strong><br>
+            <small style="color: var(--color-text-subtle); font-family: var(--font-mono);">${item.code}</small>
+          </td>
+          <td>${unitHtml}</td>
+          <td>
+            <input type="number" class="form-control" style="width: 80px;" value="${item.quantity}" min="0.01" step="any" onchange="App.updatePurchaseItemQty(${idx}, this.value)">
+          </td>
+          <td>
+            <input type="number" class="form-control" style="width: 130px;" value="${item.import_price}" min="0" onchange="App.updatePurchaseItemPrice(${idx}, this.value)">
+          </td>
+          <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">
+            ${this.formatMoney(item.quantity * item.import_price)}
+          </td>
+          <td class="text-center">
+            <button class="btn btn-sm btn-outline text-danger" onclick="App.removePurchaseItem(${idx})" style="color: var(--color-danger); border-color: transparent;">✕</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
 
     this.updatePurchaseDraftTotals();
   },
 
+  updatePurchaseItemUnit(idx, unitName) {
+    const item = this.purchaseDraftItems[idx];
+    if (!item) return;
+    item.unit = unitName;
+    const match = item.available_units?.find(u => u.unit_name === unitName);
+    if (match) {
+      item.unit_conversion_rate = match.conversion_rate || 1.0;
+      if (match.cost_price) {
+        item.import_price = match.cost_price;
+      }
+    } else {
+      item.unit_conversion_rate = 1.0;
+    }
+    this.renderPurchaseDraftItems();
+  },
+
   updatePurchaseItemQty(idx, val) {
     if (this.purchaseDraftItems[idx]) {
-      this.purchaseDraftItems[idx].quantity = Math.max(1, parseFloat(val) || 1);
+      this.purchaseDraftItems[idx].quantity = Math.max(0.01, parseFloat(val) || 1);
       this.renderPurchaseDraftItems();
     }
   },
@@ -992,20 +1434,7 @@ const App = {
   },
 
   async promptAddProductToPurchase() {
-    try {
-      const prods = await API.getProducts();
-      const listStr = prods.map((p, i) => `${i + 1}. ${p.name} (${p.code}) - Tồn: ${p.stock}`).join('\n');
-      const choice = prompt(`Nhập số thứ tự sản phẩm muốn thêm vào đơn nhập:\n\n${listStr}`);
-      if (!choice) return;
-      const idx = parseInt(choice) - 1;
-      if (prods[idx]) {
-        this.addDraftItemToPurchase(prods[idx].id);
-      } else {
-        App.toast('Lựa chọn không hợp lệ', 'warning');
-      }
-    } catch (e) {
-      App.toast('Lỗi danh sách sản phẩm', 'error');
-    }
+    this.addSelectedProductToPurchase();
   },
 
   async submitPurchaseOrder() {
@@ -1026,6 +1455,8 @@ const App = {
       supplier_name: suppName,
       items: this.purchaseDraftItems.map(i => ({
         product_id: i.product_id,
+        unit: i.unit,
+        unit_conversion_rate: i.unit_conversion_rate || 1.0,
         quantity: i.quantity,
         import_price: i.import_price
       })),
@@ -1049,9 +1480,116 @@ const App = {
   async viewPurchaseDetail(purchaseId) {
     try {
       const p = await API.getPurchase(purchaseId);
-      alert(`CHI TIẾT PHIẾU NHẬP ${p.code}\n\nNhà cung cấp: ${p.supplier_name}\nNgày: ${p.created_at}\nTổng tiền: ${this.formatMoney(p.final_amount)}\nĐã trả: ${this.formatMoney(p.paid_amount)}\nCòn nợ: ${this.formatMoney(p.debt_amount)}\n\nSản phẩm:\n` + 
-        p.items.map(i => `- ${i.product_name}: ${i.quantity} ${i.unit} x ${this.formatMoney(i.import_price)} = ${this.formatMoney(i.subtotal)}`).join('\n')
-      );
+      const modal = document.getElementById('purchase-detail-modal');
+      const title = document.getElementById('pd-title');
+      const subtitle = document.getElementById('pd-subtitle');
+      const body = document.getElementById('pd-body');
+      const footer = document.getElementById('pd-footer');
+
+      if (!modal || !body) return;
+
+      if (title) title.textContent = `Phiếu Nhập Hàng: ${p.code}`;
+      if (subtitle) subtitle.textContent = `Thời gian: ${p.created_at} | Người lập: ${p.user_name || 'Quản lý'}`;
+
+      let methodText = 'Tiền mặt';
+      if (p.payment_method === 'bank') methodText = 'Chuyển khoản';
+      if (p.payment_method === 'debt') methodText = 'Ghi nợ NCC';
+
+      body.innerHTML = `
+        <div style="background: var(--color-surface-muted); padding: 12px 16px; border-radius: var(--radius-md); border: 1px solid var(--color-border); margin-bottom: 16px;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 0.875rem;">
+            <div>
+              <span style="color: var(--color-text-secondary); display: block;">Nhà cung cấp:</span>
+              <strong style="font-size: 1rem; color: var(--color-text-main);">${p.supplier_name || 'Nhà cung cấp'}</strong>
+            </div>
+            <div>
+              <span style="color: var(--color-text-secondary); display: block;">Hình thức thanh toán:</span>
+              <strong>${methodText}</strong>
+            </div>
+            <div>
+              <span style="color: var(--color-text-secondary); display: block;">Trạng thái:</span>
+              <span class="badge-tag badge-green">Hoàn tất (Đã nhập kho)</span>
+            </div>
+          </div>
+          ${p.notes ? `
+            <div style="margin-top: 8px; font-size: 0.84rem; color: var(--color-text-secondary); border-top: 1px dashed var(--color-border); padding-top: 6px;">
+              Ghi chú chứng từ: <em>${p.notes}</em>
+            </div>
+          ` : ''}
+        </div>
+
+        <div style="margin-bottom: 12px; font-weight: 600; color: var(--color-text-main); font-size: 0.95rem;">
+          Danh sách mặt hàng nhập kho:
+        </div>
+        <div class="table-responsive" style="max-height: 280px; margin-bottom: 16px;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th style="width: 40px;">STT</th>
+                <th>Mã SKU</th>
+                <th>Tên sản phẩm</th>
+                <th>ĐVT</th>
+                <th class="text-right">SL Nhập</th>
+                <th class="text-right">Giá nhập</th>
+                <th class="text-right">Thành tiền</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${p.items && p.items.length > 0 ? p.items.map((it, idx) => `
+                <tr>
+                  <td class="text-center">${idx + 1}</td>
+                  <td style="font-family: var(--font-mono); font-size: 0.8125rem;">${it.product_code || ''}</td>
+                  <td><strong>${it.product_name}</strong></td>
+                  <td><span class="badge-tag badge-blue">${it.unit}</span></td>
+                  <td class="text-right tabular-nums font-bold">${it.quantity}</td>
+                  <td class="text-right tabular-nums">${this.formatMoney(it.import_price)}</td>
+                  <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(it.subtotal)}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="7" class="empty-state">Không có thông tin chi tiết</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background: var(--color-surface-muted); padding: 14px 16px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+            <span style="color: var(--color-text-secondary);">Tổng tiền hàng nhập:</span>
+            <span class="tabular-nums font-bold">${this.formatMoney(p.total_amount)}</span>
+          </div>
+          ${p.discount > 0 ? `
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: var(--color-danger);">
+              <span>Chiết khấu NCC:</span>
+              <span class="tabular-nums font-bold">-${this.formatMoney(p.discount)}</span>
+            </div>
+          ` : ''}
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 1.05rem; border-top: 1px dashed var(--color-border); padding-top: 8px;">
+            <strong>Cần thanh toán cho NCC:</strong>
+            <strong class="tabular-nums font-bold" style="color: var(--color-primary); font-size: 1.15rem;">${this.formatMoney(p.final_amount)}</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: var(--color-success);">
+            <span>Đã thanh toán:</span>
+            <span class="tabular-nums font-bold">${this.formatMoney(p.paid_amount)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; color: ${p.debt_amount > 0 ? 'var(--color-danger)' : 'var(--color-text-secondary)'}; font-weight: 700;">
+            <span>Còn ghi nợ NCC:</span>
+            <span class="tabular-nums font-bold">${this.formatMoney(p.debt_amount)}</span>
+          </div>
+        </div>
+      `;
+
+      footer.innerHTML = `
+        <div>
+          <button class="btn btn-outline" onclick="App.viewEntityTimeline('purchase', '${p.code}')" title="Xem lịch sử kiểm toán của phiếu nhập này">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+            Lịch sử kiểm toán
+          </button>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-outline" onclick="window.print()">In phiếu nhập</button>
+          <button class="btn btn-primary" data-close-modal="purchase-detail-modal">Đóng</button>
+        </div>
+      `;
+
+      modal.classList.add('active');
     } catch (e) {
       App.toast('Không thể tải chi tiết phiếu nhập: ' + e.message, 'error');
     }
@@ -1066,13 +1604,20 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+        <div class="card-header">
           <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
-            <input type="text" id="cust-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã khách, email...">
+            <input type="text" id="cust-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã khách, địa chỉ...">
+            <select id="cust-search-by" class="form-control" style="max-width: 140px;">
+              <option value="both">Code & Name</option>
+              <option value="code">Code</option>
+              <option value="name">Name</option>
+            </select>
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.openColumnSelector('customers')">Chọn cột</button>
-            <button class="btn btn-outline" onclick="App.exportExcel('customers')">Xuất Excel</button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportTable('customers')" title="Xuất file Excel danh sách khách hàng">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
             <button class="btn btn-primary" onclick="App.openCreateCustomerModal()">+ Thêm khách hàng</button>
           </div>
         </div>
@@ -1087,7 +1632,7 @@ const App = {
                   <th>Nhóm khách</th>
                   <th class="text-right">Tổng mua</th>
                   <th class="text-right">Công nợ hiện tại</th>
-                  <th class="text-center">Đơn chờ xử lý</th>
+                  <th class="text-center">Hàng đang đặt</th>
                   <th class="text-center">Bảng giá riêng</th>
                   <th class="text-right">Thao tác</th>
                 </tr>
@@ -1102,22 +1647,37 @@ const App = {
     `;
 
     document.getElementById('cust-search-input').addEventListener('input', () => this.loadCustomersTable());
+    document.getElementById('cust-search-by')?.addEventListener('change', () => this.loadCustomersTable());
     this.loadCustomersTable();
   },
 
   async loadCustomersTable() {
     const q = document.getElementById('cust-search-input')?.value || '';
+    const searchBy = document.getElementById('cust-search-by')?.value || 'both';
     try {
-      const customers = await API.getCustomers({ q });
+      const customers = await API.getCustomers({ q, search: q, searchBy });
       const tbody = document.getElementById('customers-table-body');
       if (!tbody) return;
 
-      if (customers.length === 0) {
+      let filtered = customers;
+      if (q) {
+        if (searchBy === 'code') {
+          filtered = filtered.filter(c => this.matchesSearch(c, q, ['code']));
+        } else if (searchBy === 'name') {
+          filtered = filtered.filter(c => this.matchesSearch(c, q, ['name']));
+        } else {
+          filtered = filtered.filter(c => this.matchesSearch(c, q, ['name', 'code', 'phone', 'address', 'group_name', 'email']));
+        }
+      }
+
+      if (filtered.length === 0) {
         tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Không tìm thấy khách hàng phù hợp</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = customers.map(c => `
+      tbody.innerHTML = filtered.map(c => {
+        const safeName = (c.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        return `
         <tr>
           <td><strong>${c.code}</strong></td>
           <td>
@@ -1132,24 +1692,51 @@ const App = {
           </td>
           <td class="text-center">
             ${c.pending_orders_count > 0 ? `
-              <button class="btn btn-sm btn-outline order-badge-pending" onclick="App.viewCustomerPendingOrders(${c.id}, '${c.name.replace(/'/g, "\\'")}')" title="Xem danh sách đơn chờ">
-                ${c.pending_orders_count} đơn (${this.formatMoney(c.pending_orders_amount)})
-              </button>
-            ` : '<span style="color: var(--color-text-disabled); font-size: 0.8rem;">0 đơn</span>'}
+              <span class="badge-tag badge-amber" title="Tổng tiền đang đặt: ${this.formatMoney(c.pending_orders_amount || 0)}">
+                ${c.pending_orders_count} đơn (${this.formatMoney(c.pending_orders_amount || 0)})
+              </span>
+            ` : '<span style="color: var(--color-text-disabled);">0 đơn</span>'}
           </td>
           <td class="text-center">
-            <button class="btn btn-sm btn-outline" style="background-color: #fffbeb; border-color: #fde68a; color: #92400e; font-weight: 600;" onclick="App.openCustomerPricingModal(${c.id}, '${c.name.replace(/'/g, "\\'")}')">
+            <button class="btn btn-sm btn-outline" style="background-color: #fffbeb; border-color: #fde68a; color: #92400e; font-weight: 600;" onclick="App.openCustomerPricingModal(${c.id}, '${safeName}')">
               Giá riêng
             </button>
           </td>
-          <td class="text-right">
-            ${c.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPayCustomerDebtModal(${c.id}, '${c.name.replace(/'/g, "\\'")}', ${c.debt})">Thu nợ</button>` : ''}
+          <td class="text-right" style="white-space: nowrap;">
+            <button class="btn btn-sm btn-outline" onclick="App.openCustomerDetailModal(${c.id})" title="Xem tóm tắt đơn hàng & thông tin">Chi tiết</button>
+            ${c.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPayCustomerDebtModal(${c.id}, '${safeName}', ${c.debt})">Thu nợ</button>` : ''}
             <button class="btn btn-sm btn-outline" onclick="App.openEditCustomerModal(${c.id})">Sửa</button>
+            ${c.id !== 1 ? `<button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.deleteCustomer(${c.id})">Xóa</button>` : ''}
+            <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('customer', '${c.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     } catch (err) {
       App.toast('Lỗi tải khách hàng: ' + err.message, 'error');
+    }
+  },
+
+  async exportCustomersExcel() {
+    try {
+      const customers = await API.getCustomers();
+      const headers = ['Mã KH', 'Tên khách hàng', 'Số điện thoại', 'Email', 'Địa chỉ', 'Nhóm khách', 'Tổng mua (VNĐ)', 'Công nợ hiện tại (VNĐ)', 'Số đơn đang đặt', 'Tổng tiền đang đặt (VNĐ)', 'Ghi chú'];
+      const rows = customers.map(c => [
+        c.code,
+        c.name,
+        c.phone || '',
+        c.email || '',
+        c.address || '',
+        c.group_name || 'Khách lẻ',
+        c.total_spent || 0,
+        c.debt || 0,
+        c.pending_orders_count || 0,
+        c.pending_orders_amount || 0,
+        c.notes || ''
+      ]);
+      await this.exportTableToExcel(headers, rows, 'DanhSachKhachHang', 'danh_sach_khach_hang.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel khách hàng: ' + err.message, 'error');
     }
   },
 
@@ -1211,52 +1798,121 @@ const App = {
     };
 
     try {
+      let resCust = null;
       if (id) {
-        await API.updateCustomer(id, payload);
+        resCust = await API.updateCustomer(id, payload);
         App.toast('Cập nhật khách hàng thành công', 'success');
       } else {
-        await API.createCustomer(payload);
+        resCust = await API.createCustomer(payload);
         App.toast('Thêm khách hàng mới thành công', 'success');
       }
       document.getElementById('customer-modal').classList.remove('active');
       this.loadCustomersTable();
+      if (typeof POS !== 'undefined' && POS.loadCustomers) {
+        await POS.loadCustomers();
+        if (resCust && resCust.id) {
+          POS.selectCustomer(resCust.id);
+          const sel = document.getElementById('pos-customer-select');
+          if (sel) sel.value = resCust.id;
+        }
+      }
     } catch (err) {
       App.toast('Lỗi lưu khách hàng: ' + err.message, 'error');
     }
   },
 
+  async deleteCustomer(id) {
+    if (id === 1) {
+      App.toast('Không thể xóa khách lẻ mặc định của hệ thống', 'warning');
+      return;
+    }
+    if (!confirm('Bạn có chắc chắn muốn xóa khách hàng này? Mọi thông tin công nợ và lịch sử mua hàng liên quan sẽ được xử lý an toàn.')) return;
+    try {
+      await API.deleteCustomer(id);
+      App.toast('Đã xóa khách hàng thành công', 'success');
+      this.loadCustomersTable();
+      if (typeof POS !== 'undefined' && POS.loadCustomers) {
+        await POS.loadCustomers();
+      }
+    } catch (err) {
+      App.toast('Lỗi xóa khách hàng: ' + err.message, 'error');
+    }
+  },
+
   openPayCustomerDebtModal(customerId, customerName, currentDebt) {
     const modal = document.getElementById('cust-debt-modal');
-    document.getElementById('debt-cust-id').value = customerId;
-    document.getElementById('debt-cust-name').textContent = customerName;
-    document.getElementById('debt-cust-current').textContent = this.formatMoney(currentDebt);
-    document.getElementById('debt-pay-amount').value = currentDebt;
+    if (!modal) return;
+    const idEl = document.getElementById('debt-cust-id');
+    const nameEl = document.getElementById('debt-cust-name');
+    const currEl = document.getElementById('debt-cust-current');
+    const amtEl = document.getElementById('debt-pay-amount');
+    const notesEl = document.getElementById('debt-notes');
+    if (idEl) {
+      idEl.value = customerId;
+      idEl.dataset.currentDebt = currentDebt || 0;
+    }
+    if (nameEl) nameEl.textContent = customerName || '';
+    if (currEl) currEl.textContent = App.formatMoney(currentDebt || 0);
+    if (amtEl) {
+      amtEl.value = currentDebt || '';
+      amtEl.max = currentDebt || '';
+    }
+    if (notesEl) notesEl.value = '';
     modal.classList.add('active');
   },
 
   async submitCustomerDebtPayment() {
-    const custId = document.getElementById('debt-cust-id').value;
-    const amount = parseFloat(document.getElementById('debt-pay-amount').value);
-    const fundType = document.getElementById('debt-fund-type').value;
+    const custId = document.getElementById('debt-cust-id')?.value;
+    const rawAmount = document.getElementById('debt-pay-amount')?.value;
+    const amount = parseFloat(rawAmount);
+    const fundType = document.getElementById('debt-fund-type')?.value || 'cash';
+    const notesInput = document.getElementById('debt-notes')?.value?.trim();
 
-    if (isNaN(amount) || amount <= 0) {
+    if (!custId) {
+      App.toast('Vui lòng chọn khách hàng cần thu nợ', 'warning');
+      return;
+    }
+
+    if (isNaN(amount) || amount <= 0 || !isFinite(amount)) {
       App.toast('Số tiền thu nợ phải lớn hơn 0', 'warning');
       return;
     }
+
+    const confirmBtn = document.getElementById('btn-confirm-collect-debt') || document.querySelector('#cust-debt-modal button.btn-success');
+    if (confirmBtn) confirmBtn.disabled = true;
 
     try {
       const res = await API.payCustomerDebt(custId, {
         amount: amount,
         fund_type: fundType,
-        notes: `Thu nợ khách hàng (Phiếu thu ${res?.receipt_code || ''})`
+        notes: notesInput || 'Thu nợ khách hàng'
       });
-      App.toast(`Đã thu ${this.formatMoney(amount)}. Nợ còn lại: ${this.formatMoney(res.new_debt)}`, 'success');
-      document.getElementById('cust-debt-modal').classList.remove('active');
-      this.loadCustomersTable();
-      this.loadTopFundSummary();
+      const remainingDebt = res?.remaining_debt !== undefined ? res.remaining_debt : (res?.new_debt ?? 0);
+      const receiptCode = res?.receipt_code ? ` (Mã PT: ${res.receipt_code})` : '';
+      App.toast(`Đã thu ${App.formatMoney(amount)}. Nợ còn lại: ${App.formatMoney(remainingDebt)}${receiptCode}`, 'success');
+      document.getElementById('cust-debt-modal')?.classList.remove('active');
+      try {
+        if (typeof App.loadCustomersTable === 'function') {
+          await App.loadCustomersTable();
+        }
+        if (typeof App.loadTopFundSummary === 'function') {
+          await App.loadTopFundSummary();
+        }
+        if (typeof POS !== 'undefined' && typeof POS.loadCustomers === 'function') {
+          await POS.loadCustomers();
+        }
+      } catch (refreshErr) {
+        console.warn('Could not refresh tables after debt payment:', refreshErr);
+      }
     } catch (err) {
       App.toast('Lỗi thu nợ: ' + err.message, 'error');
+    } finally {
+      if (confirmBtn) confirmBtn.disabled = false;
     }
+  },
+
+  submitCollectDebt() {
+    return this.submitCustomerDebtPayment();
   },
 
   async openCustomerPricingModal(customerId, customerName) {
@@ -1380,13 +2036,24 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
-          <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
-            <input type="text" id="supp-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, SĐT, mã NCC, email...">
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="supp-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo tên, mã NCC, SĐT, địa chỉ...">
+            <select id="supp-search-by" class="form-control" style="max-width: 140px;">
+              <option value="both">Code & Name</option>
+              <option value="code">Code</option>
+              <option value="name">Name</option>
+            </select>
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.openColumnSelector('suppliers')">Chọn cột</button>
-            <button class="btn btn-outline" onclick="App.exportExcel('suppliers')">Xuất Excel</button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportTable('suppliers')" title="Xuất file Excel danh sách nhà cung cấp">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất NCC
+            </button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportTable('distributors')" title="Xuất file Excel danh sách nhà phân phối">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất NPP
+            </button>
             <button class="btn btn-primary" onclick="App.openCreateSupplierModal()">+ Thêm Nhà cung cấp</button>
           </div>
         </div>
@@ -1414,22 +2081,37 @@ const App = {
     `;
 
     document.getElementById('supp-search-input')?.addEventListener('input', () => this.loadSuppliersTable());
+    document.getElementById('supp-search-by')?.addEventListener('change', () => this.loadSuppliersTable());
     this.loadSuppliersTable();
   },
 
   async loadSuppliersTable() {
     const q = document.getElementById('supp-search-input')?.value || '';
+    const searchBy = document.getElementById('supp-search-by')?.value || 'both';
     try {
-      const suppliers = await API.getSuppliers({ q });
+      const suppliers = await API.getSuppliers({ q, search: q, searchBy });
       const tbody = document.getElementById('suppliers-table-body');
       if (!tbody) return;
 
-      if (suppliers.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Chưa có nhà cung cấp nào</td></tr>`;
+      let filtered = suppliers;
+      if (q) {
+        if (searchBy === 'code') {
+          filtered = filtered.filter(s => this.matchesSearch(s, q, ['code']));
+        } else if (searchBy === 'name') {
+          filtered = filtered.filter(s => this.matchesSearch(s, q, ['name', 'company_name']));
+        } else {
+          filtered = filtered.filter(s => this.matchesSearch(s, q, ['name', 'code', 'phone', 'address', 'company_name', 'email', 'notes']));
+        }
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Chưa có nhà cung cấp nào phù hợp</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = suppliers.map(s => `
+      tbody.innerHTML = filtered.map(s => {
+        const safeName = (s.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        return `
         <tr>
           <td><strong>${s.code}</strong></td>
           <td><strong>${s.name}</strong></td>
@@ -1439,19 +2121,43 @@ const App = {
             ${this.formatMoney(s.debt)}
           </td>
           <td><small style="color: var(--color-text-subtle);">${s.notes || ''}</small></td>
-          <td class="text-right">
-            ${s.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPaySupplierDebtModal(${s.id}, '${s.name.replace(/'/g, "\\'")}', ${s.debt})">Trả nợ</button>` : ''}
+          <td class="text-right" style="white-space: nowrap;">
+            ${s.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPaySupplierDebtModal(${s.id}, '${safeName}', ${s.debt})">Trả nợ</button>` : ''}
             <button class="btn btn-sm btn-primary" onclick="App.openCreatePurchaseModal()">Nhập hàng</button>
+            <button class="btn btn-sm btn-outline" onclick="App.openEditSupplierModal(${s.id})">Sửa</button>
+            <button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.deleteSupplier(${s.id})">Xóa</button>
+            <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('supplier', '${s.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     } catch (err) {
       App.toast('Lỗi tải nhà cung cấp: ' + err.message, 'error');
     }
   },
 
+  async exportSuppliersExcel() {
+    try {
+      const suppliers = await API.getSuppliers();
+      const headers = ['Mã NCC', 'Tên nhà cung cấp', 'Số điện thoại', 'Địa chỉ', 'Công nợ phải trả NCC (VNĐ)', 'Ghi chú'];
+      const rows = suppliers.map(s => [
+        s.code,
+        s.name,
+        s.phone || '',
+        s.address || '',
+        s.debt || 0,
+        s.notes || ''
+      ]);
+      await this.exportTableToExcel(headers, rows, 'DanhSachNhaCungCap', 'danh_sach_nha_cung_cap.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel nhà cung cấp: ' + err.message, 'error');
+    }
+  },
+
   openCreateSupplierModal() {
     const modal = document.getElementById('supplier-modal');
+    const title = document.getElementById('supp-modal-title');
+    if (title) title.textContent = 'Thêm Nhà cung cấp mới';
     document.getElementById('supp-id').value = '';
     document.getElementById('supp-code').value = '';
     document.getElementById('supp-name').value = '';
@@ -1462,7 +2168,30 @@ const App = {
     modal.classList.add('active');
   },
 
+  async openEditSupplierModal(id) {
+    try {
+      const suppliers = await API.getSuppliers();
+      const s = suppliers.find(x => x.id === id);
+      if (!s) return;
+
+      const modal = document.getElementById('supplier-modal');
+      const title = document.getElementById('supp-modal-title');
+      if (title) title.textContent = 'Chỉnh sửa: ' + s.name;
+      document.getElementById('supp-id').value = s.id;
+      document.getElementById('supp-code').value = s.code;
+      document.getElementById('supp-name').value = s.name;
+      document.getElementById('supp-phone').value = s.phone || '';
+      document.getElementById('supp-address').value = s.address || '';
+      document.getElementById('supp-debt').value = s.debt || 0;
+      document.getElementById('supp-notes').value = s.notes || '';
+      modal.classList.add('active');
+    } catch (e) {
+      App.toast('Lỗi mở form nhà cung cấp: ' + e.message, 'error');
+    }
+  },
+
   async saveSupplierForm() {
+    const id = document.getElementById('supp-id').value;
     const name = document.getElementById('supp-name').value.trim();
     if (!name) {
       App.toast('Tên nhà cung cấp không được để trống', 'warning');
@@ -1479,8 +2208,13 @@ const App = {
     };
 
     try {
-      await API.createSupplier(payload);
-      App.toast('Thêm nhà cung cấp thành công', 'success');
+      if (id) {
+        await API.updateSupplier(id, payload);
+        App.toast('Cập nhật nhà cung cấp thành công', 'success');
+      } else {
+        await API.createSupplier(payload);
+        App.toast('Thêm nhà cung cấp mới thành công', 'success');
+      }
       document.getElementById('supplier-modal').classList.remove('active');
       this.renderSuppliersView();
     } catch (err) {
@@ -1488,36 +2222,83 @@ const App = {
     }
   },
 
+  async deleteSupplier(id) {
+    if (!confirm('Bạn có chắc chắn muốn xóa nhà cung cấp này? Mọi thông tin nhập hàng và công nợ liên quan sẽ được bảo lưu theo quy định kiểm toán.')) return;
+    try {
+      await API.deleteSupplier(id);
+      App.toast('Đã xóa nhà cung cấp thành công', 'success');
+      this.renderSuppliersView();
+    } catch (err) {
+      App.toast('Lỗi xóa nhà cung cấp: ' + err.message, 'error');
+    }
+  },
+
   openPaySupplierDebtModal(suppId, suppName, debt) {
     const modal = document.getElementById('supp-debt-modal');
-    document.getElementById('debt-supp-id').value = suppId;
-    document.getElementById('debt-supp-name').textContent = suppName;
-    document.getElementById('debt-supp-current').textContent = this.formatMoney(debt);
-    document.getElementById('debt-supp-amount').value = debt;
+    if (!modal) return;
+    const idEl = document.getElementById('debt-supp-id');
+    const nameEl = document.getElementById('debt-supp-name');
+    const currEl = document.getElementById('debt-supp-current');
+    const amtEl = document.getElementById('debt-supp-amount');
+    const notesEl = document.getElementById('debt-supp-notes');
+    if (idEl) {
+      idEl.value = suppId;
+      idEl.dataset.currentDebt = debt || 0;
+    }
+    if (nameEl) nameEl.textContent = suppName || '';
+    if (currEl) currEl.textContent = App.formatMoney(debt || 0);
+    if (amtEl) {
+      amtEl.value = debt || '';
+      amtEl.max = debt || '';
+    }
+    if (notesEl) notesEl.value = '';
     modal.classList.add('active');
   },
 
   async submitSupplierDebtPayment() {
-    const suppId = document.getElementById('debt-supp-id').value;
-    const amount = parseFloat(document.getElementById('debt-supp-amount').value);
-    const fundType = document.getElementById('debt-supp-fund-type').value;
+    const suppId = document.getElementById('debt-supp-id')?.value;
+    const rawAmount = document.getElementById('debt-supp-amount')?.value;
+    const amount = parseFloat(rawAmount);
+    const fundType = document.getElementById('debt-supp-fund-type')?.value || 'cash';
 
-    if (isNaN(amount) || amount <= 0) {
+    if (!suppId) {
+      App.toast('Vui lòng chọn nhà cung cấp cần trả nợ', 'warning');
+      return;
+    }
+
+    if (isNaN(amount) || amount <= 0 || !isFinite(amount)) {
       App.toast('Số tiền trả nợ phải lớn hơn 0', 'warning');
       return;
     }
 
+    const confirmBtn = document.getElementById('btn-confirm-pay-supp-debt') || document.querySelector('#supp-debt-modal button.btn-primary');
+    if (confirmBtn) confirmBtn.disabled = true;
+
     try {
+      const notes = document.getElementById('debt-supp-notes')?.value?.trim() || 'Trả nợ nhà cung cấp';
       const res = await API.paySupplierDebt(suppId, {
         amount: amount,
-        fund_type: fundType
+        fund_type: fundType,
+        notes: notes
       });
-      App.toast(`Đã trả nợ ${this.formatMoney(amount)}. Nợ còn lại: ${this.formatMoney(res.new_debt)}`, 'success');
-      document.getElementById('supp-debt-modal').classList.remove('active');
-      this.renderSuppliersView();
-      this.loadTopFundSummary();
+      const remainingDebt = res?.remaining_debt !== undefined ? res.remaining_debt : (res?.new_debt ?? 0);
+      const paymentCode = res?.payment_code ? ` (Mã PC: ${res.payment_code})` : '';
+      App.toast(`Đã trả nợ ${App.formatMoney(amount)}. Nợ còn lại: ${App.formatMoney(remainingDebt)}${paymentCode}`, 'success');
+      document.getElementById('supp-debt-modal')?.classList.remove('active');
+      try {
+        if (typeof App.renderSuppliersView === 'function') {
+          await App.renderSuppliersView();
+        }
+        if (typeof App.loadTopFundSummary === 'function') {
+          await App.loadTopFundSummary();
+        }
+      } catch (refreshErr) {
+        console.warn('Could not refresh views after paying supplier debt:', refreshErr);
+      }
     } catch (err) {
       App.toast('Lỗi trả nợ NCC: ' + err.message, 'error');
+    } finally {
+      if (confirmBtn) confirmBtn.disabled = false;
     }
   },
 
@@ -1530,14 +2311,15 @@ const App = {
 
     container.innerHTML = `
       <div class="card">
-        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
-          <div class="card-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
-            <span>Quản lý Khách Trả Hàng (Hoàn tiền / Giảm trừ nợ)</span>
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="ret-search-input" class="form-control" style="max-width: 320px;" placeholder="Tìm theo mã phiếu, khách hàng, lý do...">
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.openColumnSelector('returns')">Chọn cột</button>
-            <button class="btn btn-outline" onclick="App.exportExcel('returns')">Xuất Excel</button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportReturnsExcel()" title="Xuất file Excel danh sách trả hàng">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
             <button class="btn btn-primary" onclick="App.openCreateReturnModal()">+ Lập phiếu trả hàng</button>
           </div>
         </div>
@@ -1554,10 +2336,11 @@ const App = {
                   <th class="text-right">Tiền hoàn khách</th>
                   <th class="text-right">Trừ vào nợ cũ</th>
                   <th>Lý do</th>
+                  <th class="text-right">Thao tác</th>
                 </tr>
               </thead>
               <tbody id="returns-table-body">
-                <tr><td colspan="8" class="empty-state">Đang tải danh sách trả hàng...</td></tr>
+                <tr><td colspan="9" class="empty-state">Đang tải danh sách trả hàng...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1565,17 +2348,28 @@ const App = {
       </div>
     `;
 
+    document.getElementById('ret-search-input')?.addEventListener('input', () => this.loadReturnsTable());
+    this.loadReturnsTable();
+  },
+
+  async loadReturnsTable() {
+    const q = document.getElementById('ret-search-input')?.value || '';
     try {
       const returns = await API.getReturns();
       const tbody = document.getElementById('returns-table-body');
       if (!tbody) return;
 
-      if (returns.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Chưa có phiếu trả hàng nào</td></tr>`;
+      let filtered = returns;
+      if (q) {
+        filtered = filtered.filter(r => this.matchesSearch(r, q, ['code', 'customer_name', 'notes']));
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-state">Chưa có phiếu trả hàng phù hợp</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = returns.map(r => `
+      tbody.innerHTML = filtered.map(r => `
         <tr>
           <td><strong>${r.code}</strong></td>
           <td>${r.created_at}</td>
@@ -1585,10 +2379,34 @@ const App = {
           <td class="text-right tabular-nums" style="color: var(--color-danger); font-weight: 600;">${this.formatMoney(r.refund_amount)}</td>
           <td class="text-right tabular-nums" style="color: var(--color-success); font-weight: 600;">${this.formatMoney(r.debt_deduct_amount)}</td>
           <td><small style="color: var(--color-text-subtle);">${r.notes || ''}</small></td>
+          <td class="text-right" style="white-space: nowrap;">
+            <button class="btn btn-sm btn-outline" onclick="App.viewReturnDetail(${r.id})">Chi tiết</button>
+            <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('return', '${r.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
+          </td>
         </tr>
       `).join('');
     } catch (err) {
       App.toast('Lỗi tải phiếu trả hàng: ' + err.message, 'error');
+    }
+  },
+
+  async exportReturnsExcel() {
+    try {
+      const returns = await API.getReturns();
+      const headers = ['Mã phiếu trả', 'Thời gian', 'Khách hàng', 'Số mặt hàng', 'Tổng giá trị trả (VNĐ)', 'Tiền hoàn khách (VNĐ)', 'Cấn trừ nợ cũ (VNĐ)', 'Lý do trả hàng'];
+      const rows = returns.map(r => [
+        r.code,
+        r.created_at,
+        r.customer_name || 'Khách lẻ',
+        r.item_count || 0,
+        r.total_amount || 0,
+        r.refund_amount || 0,
+        r.debt_deduct_amount || 0,
+        r.notes || ''
+      ]);
+      await this.exportTableToExcel(headers, rows, 'DanhSachTraHang', 'danh_sach_tra_hang.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel trả hàng: ' + err.message, 'error');
     }
   },
 
@@ -1611,27 +2429,73 @@ const App = {
     const prodSelect = document.getElementById('ret-product-select');
     prodSelect.innerHTML = '<option value="">-- Chọn sản phẩm khách trả lại --</option>';
     try {
-      const prods = await API.getProducts();
-      prods.forEach(p => {
+      this.returnCachedProducts = await API.getProducts();
+      this.returnCachedProducts.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.id;
-        opt.textContent = `${p.name} (Niêm yết: ${this.formatMoney(p.sale_price)})`;
-        opt.dataset.price = p.sale_price;
+        opt.textContent = `${p.name} (${p.code}) - Tồn: ${p.stock} ${p.unit}`;
         prodSelect.appendChild(opt);
       });
     } catch (e) {}
 
-    document.getElementById('ret-product-select').onchange = (e) => {
-      const opt = e.target.options[e.target.selectedIndex];
-      if (opt && opt.dataset.price) {
-        document.getElementById('ret-price').value = opt.dataset.price;
-        this.updateReturnTotals();
-      }
-    };
+    this.onReturnProductChange();
 
     document.getElementById('ret-qty').value = 1;
     document.getElementById('ret-qty').oninput = () => this.updateReturnTotals();
     document.getElementById('ret-price').oninput = () => this.updateReturnTotals();
+  },
+
+  onReturnProductChange() {
+    const prodSelect = document.getElementById('ret-product-select');
+    const unitSelect = document.getElementById('ret-unit-select');
+    if (!prodSelect || !unitSelect) return;
+
+    const prodId = parseInt(prodSelect.value);
+    const p = this.returnCachedProducts?.find(x => x.id === prodId);
+
+    unitSelect.innerHTML = '';
+    if (!p) {
+      unitSelect.innerHTML = '<option value="" data-conv="1">Đơn vị cơ bản</option>';
+      document.getElementById('ret-price').value = 0;
+      this.updateReturnTotals();
+      return;
+    }
+
+    const availableUnits = [
+      { unit_name: p.unit, conversion_rate: 1.0, sale_price: p.sale_price }
+    ];
+    if (p.units && Array.isArray(p.units)) {
+      p.units.forEach(u => {
+        if (!availableUnits.some(au => au.unit_name.toLowerCase() === u.unit_name.toLowerCase())) {
+          availableUnits.push({
+            unit_name: u.unit_name,
+            conversion_rate: u.conversion_rate || 1.0,
+            sale_price: u.sale_price || (p.sale_price * (u.conversion_rate || 1.0))
+          });
+        }
+      });
+    }
+
+    availableUnits.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.unit_name;
+      opt.textContent = `${u.unit_name} ${u.conversion_rate !== 1.0 ? `(x${u.conversion_rate})` : ''}`;
+      opt.dataset.conv = u.conversion_rate;
+      opt.dataset.price = u.sale_price;
+      unitSelect.appendChild(opt);
+    });
+
+    this.onReturnUnitChange();
+  },
+
+  onReturnUnitChange() {
+    const unitSelect = document.getElementById('ret-unit-select');
+    if (!unitSelect) return;
+    const opt = unitSelect.options[unitSelect.selectedIndex];
+    if (opt && opt.dataset.price) {
+      document.getElementById('ret-price').value = opt.dataset.price;
+    }
+    this.updateReturnTotals();
   },
 
   updateReturnTotals() {
@@ -1658,6 +2522,11 @@ const App = {
       return;
     }
 
+    const unitSelect = document.getElementById('ret-unit-select');
+    const unitOpt = unitSelect?.options[unitSelect.selectedIndex];
+    const unitName = unitOpt ? unitOpt.value : '';
+    const unitConv = unitOpt ? (parseFloat(unitOpt.dataset.conv) || 1.0) : 1.0;
+
     const qty = parseFloat(document.getElementById('ret-qty').value) || 0;
     const price = parseFloat(document.getElementById('ret-price').value) || 0;
     if (qty <= 0 || price < 0) {
@@ -1675,6 +2544,8 @@ const App = {
       customer_name: custName,
       items: [{
         product_id: prodId,
+        unit: unitName,
+        unit_conversion_rate: unitConv,
         quantity: qty,
         return_price: price
       }],
@@ -1695,12 +2566,122 @@ const App = {
     }
   },
 
+  async viewReturnDetail(returnId) {
+    try {
+      const r = await API.getReturn(returnId);
+      const modal = document.getElementById('return-detail-modal');
+      const title = document.getElementById('rd-title');
+      const subtitle = document.getElementById('rd-subtitle');
+      const body = document.getElementById('rd-body');
+      const footer = document.getElementById('rd-footer');
+
+      if (!modal || !body) return;
+
+      if (title) title.textContent = `Phiếu Trả Hàng: ${r.code}`;
+      if (subtitle) subtitle.textContent = `Thời gian: ${r.created_at} | Người lập: ${r.user_name || 'Thu ngân'}`;
+
+      let fundText = 'Tiền mặt tại két';
+      if (r.fund_type === 'bank') fundText = 'Chuyển khoản';
+
+      body.innerHTML = `
+        <div style="background: var(--color-surface-muted); padding: 12px 16px; border-radius: var(--radius-md); border: 1px solid var(--color-border); margin-bottom: 16px;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; font-size: 0.875rem;">
+            <div>
+              <span style="color: var(--color-text-secondary); display: block;">Khách hàng:</span>
+              <strong style="font-size: 1rem; color: var(--color-text-main);">${r.customer_name || 'Khách lẻ'}</strong>
+            </div>
+            <div>
+              <span style="color: var(--color-text-secondary); display: block;">Nguồn hoàn tiền:</span>
+              <strong>${fundText}</strong>
+            </div>
+            <div>
+              <span style="color: var(--color-text-secondary); display: block;">Trạng thái:</span>
+              <span class="badge-tag badge-green">Hoàn tất (Đã nhập lại kho)</span>
+            </div>
+          </div>
+          ${r.notes ? `
+            <div style="margin-top: 8px; font-size: 0.84rem; color: var(--color-text-secondary); border-top: 1px dashed var(--color-border); padding-top: 6px;">
+              Lý do trả hàng: <em>${r.notes}</em>
+            </div>
+          ` : ''}
+        </div>
+
+        <div style="margin-bottom: 12px; font-weight: 600; color: var(--color-text-main); font-size: 0.95rem;">
+          Danh sách mặt hàng hoàn trả:
+        </div>
+        <div class="table-responsive" style="max-height: 280px; margin-bottom: 16px;">
+          <table class="table">
+            <thead>
+              <tr>
+                <th style="width: 40px;">STT</th>
+                <th>Tên sản phẩm</th>
+                <th>ĐVT</th>
+                <th class="text-right">SL Trả</th>
+                <th class="text-right">Đơn giá hoàn</th>
+                <th class="text-right">Thành tiền</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${r.items && r.items.length > 0 ? r.items.map((it, idx) => `
+                <tr>
+                  <td class="text-center">${idx + 1}</td>
+                  <td><strong>${it.product_name}</strong></td>
+                  <td><span class="badge-tag badge-purple">${it.unit}</span></td>
+                  <td class="text-right tabular-nums font-bold">${it.quantity}</td>
+                  <td class="text-right tabular-nums">${this.formatMoney(it.return_price)}</td>
+                  <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(it.subtotal)}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="6" class="empty-state">Không có thông tin chi tiết</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background: var(--color-surface-muted); padding: 14px 16px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 1.05rem;">
+            <strong>Tổng giá trị hàng trả lại:</strong>
+            <strong class="tabular-nums font-bold" style="color: var(--color-primary); font-size: 1.15rem;">${this.formatMoney(r.total_amount)}</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 6px; color: var(--color-danger); border-top: 1px dashed var(--color-border); padding-top: 8px;">
+            <span>Tiền mặt hoàn cho khách:</span>
+            <span class="tabular-nums font-bold">-${this.formatMoney(r.refund_amount)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; color: var(--color-success); font-weight: 700;">
+            <span>Giảm trừ vào nợ cũ của khách:</span>
+            <span class="tabular-nums font-bold">-${this.formatMoney(r.debt_deduct_amount)}</span>
+          </div>
+        </div>
+      `;
+
+      footer.innerHTML = `
+        <div>
+          <button class="btn btn-outline" onclick="App.viewEntityTimeline('return', '${r.code}')" title="Xem lịch sử kiểm toán của phiếu trả này">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+            Lịch sử kiểm toán
+          </button>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-outline" onclick="window.print()">In phiếu trả</button>
+          <button class="btn btn-primary" data-close-modal="return-detail-modal">Đóng</button>
+        </div>
+      `;
+
+      modal.classList.add('active');
+    } catch (e) {
+      App.toast('Không thể tải chi tiết phiếu trả hàng: ' + e.message, 'error');
+    }
+  },
+
   // ==========================================
   // 7. CASH FLOW VIEW (Sổ quỹ & Dòng tiền)
   // ==========================================
   async renderCashFlowView() {
     const container = document.getElementById('view-cash-flow');
     if (!container) return;
+
+    if (this.currentUser && this.hasPermission && !this.hasPermission('cash_flow:view')) {
+      container.innerHTML = this.renderAccessDenied('cash_flow:view');
+      return;
+    }
 
     container.innerHTML = `
       <div id="cash-flow-summary-cards" class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));">
@@ -1721,8 +2702,10 @@ const App = {
             </select>
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.openColumnSelector('cash-flow')">Chọn cột</button>
-            <button class="btn btn-outline" onclick="App.exportExcel('cash-flow')">Xuất Excel</button>
+            <button class="btn btn-outline btn-excel" onclick="App.exportCashFlowExcel()" title="Xuất file Excel sổ quỹ">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
             <button class="btn btn-success" onclick="App.openCreateCashFlowModal('receipt')">+ Lập Phiếu Thu</button>
             <button class="btn btn-danger" onclick="App.openCreateCashFlowModal('payment')">- Lập Phiếu Chi</button>
           </div>
@@ -1751,122 +2734,248 @@ const App = {
       </div>
     `;
 
-    document.getElementById('cf-type-filter').addEventListener('change', () => this.loadCashFlowData());
-    document.getElementById('cf-fund-filter').addEventListener('change', () => this.loadCashFlowData());
-    this.loadCashFlowData();
+    const typeFilter = document.getElementById('cf-type-filter');
+    const fundFilter = document.getElementById('cf-fund-filter');
+    if (typeFilter) typeFilter.addEventListener('change', () => this.loadCashFlowTable());
+    if (fundFilter) fundFilter.addEventListener('change', () => this.loadCashFlowTable());
+
+    await this.loadCashFlowTable();
   },
 
-  async loadCashFlowData() {
+  normalizeCashFlowResponse(res) {
+    let items = [];
+    let summary = null;
+
+    if (Array.isArray(res)) {
+      items = res;
+    } else if (res && typeof res === 'object') {
+      if (Array.isArray(res.items)) {
+        items = res.items;
+      } else if (Array.isArray(res.data)) {
+        items = res.data;
+      } else if (Array.isArray(res.cash_flows)) {
+        items = res.cash_flows;
+      } else if (Array.isArray(res.rows)) {
+        items = res.rows;
+      }
+      if (res.summary && typeof res.summary === 'object') {
+        summary = { ...res.summary };
+      }
+    }
+
+    return { items, summary };
+  },
+
+  async loadCashFlowTable() {
     const type = document.getElementById('cf-type-filter')?.value || 'all';
     const fund = document.getElementById('cf-fund-filter')?.value || 'all';
 
     try {
       const res = await API.getCashFlow({ type, fund });
-      const summary = res.summary || {};
+      const { items, summary: resSummary } = this.normalizeCashFlowResponse(res);
 
-      const summaryCards = document.getElementById('cash-flow-summary-cards');
-      if (summaryCards) {
-        summaryCards.innerHTML = `
-          <div class="stat-card">
-            <div class="stat-icon icon-blue">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Tồn quỹ hiện tại</p>
-              <h3 style="color: var(--color-primary);">${this.formatMoney(summary.current_balance)}</h3>
-              <small>Thực thu trừ thực chi</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-green">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Tổng thực thu</p>
-              <h3 style="color: var(--color-success);">${this.formatMoney(summary.total_receipts)}</h3>
-              <small>Bán hàng & thu nợ</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-red">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Tổng thực chi</p>
-              <h3 style="color: var(--color-danger);">${this.formatMoney(summary.total_payments)}</h3>
-              <small>Nhập hàng & chi phí</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-purple">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Phân loại quỹ</p>
-              <div style="font-size: 0.8rem; font-weight: 700; margin-top: 3px;" class="tabular-nums">
-                TM: ${this.formatMoney(summary.cash_balance)}<br>
-                NH: ${this.formatMoney(summary.bank_balance)}
-              </div>
-            </div>
-          </div>
-        `;
+      let summary = resSummary;
+      if (!summary || summary.current_balance === undefined) {
+        try {
+          if (typeof API.getFundSummary === 'function') {
+            const fundRes = await API.getFundSummary({ fund });
+            if (fundRes && typeof fundRes === 'object') {
+              summary = fundRes;
+            }
+          }
+        } catch (e) {
+          // Ignore and fallback to computing from items
+        }
       }
 
-      const tbody = document.getElementById('cash-flow-tbody');
-      if (!tbody) return;
+      // If summary is still missing or incomplete, compute from items
+      if (!summary || summary.current_balance === undefined) {
+        const totalRec = items.filter(x => x.type === 'receipt').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const totalPay = items.filter(x => x.type === 'payment').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const cashRec = items.filter(x => x.type === 'receipt' && (x.fund_type === 'cash' || !x.fund_type)).reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const cashPay = items.filter(x => x.type === 'payment' && (x.fund_type === 'cash' || !x.fund_type)).reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const bankRec = items.filter(x => x.type === 'receipt' && x.fund_type === 'bank').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const bankPay = items.filter(x => x.type === 'payment' && x.fund_type === 'bank').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
 
-      if (!res.items || res.items.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không có giao dịch sổ quỹ nào</td></tr>`;
-        return;
+        summary = {
+          total_receipts: totalRec,
+          total_payments: totalPay,
+          current_balance: totalRec - totalPay,
+          total_balance: totalRec - totalPay,
+          cash_balance: cashRec - cashPay,
+          bank_balance: bankRec - bankPay
+        };
       }
 
-      tbody.innerHTML = res.items.map(item => `
-        <tr>
-          <td><strong>${item.code}</strong></td>
-          <td>${item.created_at}</td>
-          <td>
-            ${item.type === 'receipt' 
-              ? '<span class="badge-tag badge-green">Phiếu Thu (+)</span>' 
-              : '<span class="badge-tag badge-red">Phiếu Chi (-)</span>'}
-          </td>
-          <td><strong>${item.category}</strong></td>
-          <td>${item.target_name || 'Khác'}</td>
-          <td>
-            <span class="badge-tag ${item.fund_type === 'cash' ? 'badge-blue' : 'badge-purple'}">
-              ${item.fund_type === 'cash' ? 'Tiền mặt' : 'Ngân hàng'}
-            </span>
-          </td>
-          <td class="text-right tabular-nums font-bold" style="color: ${item.type === 'receipt' ? 'var(--color-success)' : 'var(--color-danger)'};">
-            ${item.type === 'receipt' ? '+' : '-'}${this.formatMoney(item.amount)}
-          </td>
-          <td><small style="color: var(--color-text-subtle);">${item.notes || ''}</small></td>
-        </tr>
-      `).join('');
+      this.renderCashFlowSummaryCards(summary);
+      this.renderCashFlowTableRows(items);
     } catch (err) {
+      console.error('Error loading cash flow:', err);
+      const tbody = document.getElementById('cash-flow-tbody');
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state text-danger">Lỗi tải sổ quỹ: ${err.message}</td></tr>`;
+      }
       App.toast('Lỗi tải sổ quỹ: ' + err.message, 'error');
+    }
+  },
+
+  async loadCashFlowData() {
+    return this.loadCashFlowTable();
+  },
+
+  renderCashFlowSummaryCards(summary = {}) {
+    const summaryCards = document.getElementById('cash-flow-summary-cards');
+    if (!summaryCards) return;
+
+    const currentBalance = summary.current_balance !== undefined ? summary.current_balance : (summary.total_balance !== undefined ? summary.total_balance : 0);
+    const totalReceipts = summary.total_receipts !== undefined ? summary.total_receipts : 0;
+    const totalPayments = summary.total_payments !== undefined ? summary.total_payments : 0;
+    const cashBalance = summary.cash_balance !== undefined ? summary.cash_balance : 0;
+    const bankBalance = summary.bank_balance !== undefined ? summary.bank_balance : 0;
+
+    summaryCards.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-icon icon-blue">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Tồn quỹ hiện tại</p>
+          <h3 style="color: var(--color-primary);">${this.formatMoney(currentBalance)}</h3>
+          <small>Thực thu trừ thực chi</small>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon icon-green">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Tổng thực thu</p>
+          <h3 style="color: var(--color-success);">${this.formatMoney(totalReceipts)}</h3>
+          <small>Bán hàng & thu nợ</small>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon icon-red">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Tổng thực chi</p>
+          <h3 style="color: var(--color-danger);">${this.formatMoney(totalPayments)}</h3>
+          <small>Nhập hàng & chi phí</small>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon icon-purple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Phân loại quỹ</p>
+          <div style="font-size: 0.8rem; font-weight: 700; margin-top: 3px;" class="tabular-nums">
+            TM: ${this.formatMoney(cashBalance)}<br>
+            NH: ${this.formatMoney(bankBalance)}
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
+  renderCashFlowTableRows(items = []) {
+    const tbody = document.getElementById('cash-flow-tbody');
+    if (!tbody) return;
+
+    if (!items || items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không có giao dịch sổ quỹ nào</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = items.map(item => `
+      <tr>
+        <td><strong>${item.code || ''}</strong></td>
+        <td>${item.created_at || ''}</td>
+        <td>
+          ${item.type === 'receipt' 
+            ? '<span class="badge-tag badge-green">Phiếu Thu (+)</span>' 
+            : '<span class="badge-tag badge-red">Phiếu Chi (-)</span>'}
+        </td>
+        <td><strong>${item.category || ''}</strong></td>
+        <td>${item.target_name || 'Khác'}</td>
+        <td>
+          <span class="badge-tag ${item.fund_type === 'bank' ? 'badge-purple' : (item.fund_type === 'debt' ? 'badge-amber' : 'badge-blue')}">
+            ${item.fund_type === 'bank' ? 'Ngân hàng' : (item.fund_type === 'debt' ? 'Ghi nợ' : 'Tiền mặt')}
+          </span>
+        </td>
+        <td class="text-right tabular-nums font-bold" style="color: ${item.type === 'receipt' ? 'var(--color-success)' : 'var(--color-danger)'};">
+          ${item.type === 'receipt' ? '+' : '-'}${this.formatMoney(item.amount)}
+        </td>
+        <td><small style="color: var(--color-text-subtle);">${item.notes || ''}</small></td>
+      </tr>
+    `).join('');
+  },
+
+  async exportCashFlowExcel() {
+    try {
+      const type = document.getElementById('cf-type-filter')?.value || 'all';
+      const fund = document.getElementById('cf-fund-filter')?.value || 'all';
+      const res = await API.getCashFlow({ type, fund });
+      const { items } = this.normalizeCashFlowResponse(res);
+      const headers = ['Mã phiếu', 'Thời gian', 'Loại phiếu', 'Hạng mục', 'Đối tượng', 'Tài khoản quỹ', 'Số tiền (VNĐ)', 'Mã chứng từ liên quan', 'Ghi chú'];
+      const rows = items.map(item => [
+        item.code,
+        item.created_at,
+        item.type === 'receipt' ? 'Phiếu thu (+)' : 'Phiếu chi (-)',
+        item.category || '',
+        item.target_name || '',
+        item.fund_type === 'bank' ? 'Ngân hàng' : (item.fund_type === 'debt' ? 'Ghi nợ' : 'Tiền mặt'),
+        item.amount || 0,
+        item.reference_code || '',
+        item.notes || ''
+      ]);
+      await this.exportTableToExcel(headers, rows, 'SoQuyDongTien', 'so_quy_dong_tien.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel sổ quỹ: ' + err.message, 'error');
     }
   },
 
   openCreateCashFlowModal(type) {
     const modal = document.getElementById('cash-flow-modal');
-    document.getElementById('cf-modal-type').value = type;
-    document.getElementById('cf-modal-title').textContent = type === 'receipt' ? 'Lập Phiếu Thu tiền (+)' : 'Lập Phiếu Chi tiền (-)';
-    document.getElementById('cf-category').value = type === 'receipt' ? 'Thu khác' : 'Chi chi phí vận hành';
-    document.getElementById('cf-amount').value = '';
-    document.getElementById('cf-target-name').value = '';
-    document.getElementById('cf-notes').value = '';
+    if (!modal) return;
+    const typeEl = document.getElementById('cf-modal-type');
+    const titleEl = document.getElementById('cf-modal-title');
+    const catEl = document.getElementById('cf-category');
+    const amtEl = document.getElementById('cf-amount');
+    const targetEl = document.getElementById('cf-target-name');
+    const fundEl = document.getElementById('cf-fund-type');
+    const notesEl = document.getElementById('cf-notes');
+
+    if (typeEl) typeEl.value = type;
+    if (titleEl) titleEl.textContent = type === 'receipt' ? 'Lập Phiếu Thu tiền (+)' : 'Lập Phiếu Chi tiền (-)';
+    if (catEl) catEl.value = type === 'receipt' ? 'Thu khác' : 'Chi chi phí vận hành';
+    if (amtEl) amtEl.value = '';
+    if (targetEl) targetEl.value = '';
+    if (fundEl) fundEl.value = 'cash';
+    if (notesEl) notesEl.value = '';
     modal.classList.add('active');
   },
 
   async saveCashFlowVoucher() {
-    const type = document.getElementById('cf-modal-type').value;
-    const category = document.getElementById('cf-category').value.trim();
-    const amount = parseFloat(document.getElementById('cf-amount').value);
-    const targetName = document.getElementById('cf-target-name').value.trim();
-    const fundType = document.getElementById('cf-fund-type').value;
-    const notes = document.getElementById('cf-notes').value.trim();
+    const type = document.getElementById('cf-modal-type')?.value;
+    const category = document.getElementById('cf-category')?.value?.trim();
+    const amount = parseFloat(document.getElementById('cf-amount')?.value);
+    const targetName = document.getElementById('cf-target-name')?.value?.trim();
+    const fundType = document.getElementById('cf-fund-type')?.value || 'cash';
+    const notes = document.getElementById('cf-notes')?.value?.trim();
 
-    if (isNaN(amount) || amount <= 0) {
+    if (!type || (type !== 'receipt' && type !== 'payment')) {
+      App.toast('Loại phiếu không hợp lệ', 'warning');
+      return;
+    }
+
+    if (!category) {
+      App.toast('Vui lòng nhập hạng mục thu/chi', 'warning');
+      return;
+    }
+
+    if (isNaN(amount) || !isFinite(amount) || amount <= 0) {
       App.toast('Số tiền phải lớn hơn 0', 'warning');
       return;
     }
@@ -1881,9 +2990,9 @@ const App = {
         notes: notes
       });
       App.toast(`Tạo ${type === 'receipt' ? 'phiếu thu' : 'phiếu chi'} thành công`, 'success');
-      document.getElementById('cash-flow-modal').classList.remove('active');
-      this.loadCashFlowData();
-      this.loadTopFundSummary();
+      document.getElementById('cash-flow-modal')?.classList.remove('active');
+      await this.loadCashFlowTable();
+      await this.loadTopFundSummary();
     } catch (err) {
       App.toast('Lỗi lưu sổ quỹ: ' + err.message, 'error');
     }
@@ -1903,6 +3012,10 @@ const App = {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/></svg>
             <span>Lịch sử Hóa đơn Bán ra (Doanh thu & Lợi nhuận gộp)</span>
           </div>
+          <button class="btn btn-outline btn-excel" onclick="App.exportReportsExcel()" title="Xuất file Excel báo cáo doanh thu & lợi nhuận">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Xuất Excel
+          </button>
         </div>
         <div class="card-body" style="padding: 0;">
           <div class="table-responsive">
@@ -1932,10 +3045,11 @@ const App = {
     `;
 
     try {
-      const orders = await API.getOrders();
+      const res = await API.getOrders();
       const tbody = document.getElementById('orders-report-tbody');
       if (!tbody) return;
 
+      const orders = this.normalizeOrders(res).filter(Boolean);
       if (orders.length === 0) {
         tbody.innerHTML = `<tr><td colspan="11" class="empty-state">Chưa có đơn hàng nào</td></tr>`;
         return;
@@ -1957,24 +3071,964 @@ const App = {
           <td class="text-right tabular-nums font-bold" style="color: var(--color-success);">
             +${this.formatMoney(o.profit)}
           </td>
-          <td class="text-right">
+          <td class="text-right" style="white-space: nowrap;">
             <button class="btn btn-sm btn-outline" onclick="App.viewOrderDetail(${o.id})">Chi tiết</button>
+            <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('order', '${o.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
       `).join('');
     } catch (err) {
+      const tbody = document.getElementById('orders-report-tbody');
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="11" class="empty-state text-danger">Lỗi tải báo cáo: ${err.message}</td></tr>`;
+      }
       App.toast('Lỗi tải báo cáo: ' + err.message, 'error');
+    }
+  },
+
+  async exportReportsExcel() {
+    try {
+      const res = await API.getOrders();
+      const orders = this.normalizeOrders(res).filter(Boolean);
+      const headers = ['Mã đơn hàng', 'Thời gian', 'Khách hàng', 'Tiền hàng (VNĐ)', 'Chiết khấu (VNĐ)', 'Thuế VAT (VNĐ)', 'Khách cần trả (VNĐ)', 'Khách đã trả (VNĐ)', 'Ghi nợ (VNĐ)', 'Lợi nhuận gộp (VNĐ)', 'Trạng thái'];
+      const statusMap = { completed: 'Đã hoàn thành', ordered: 'Khách đang đặt', draft: 'Bản nháp', cancelled: 'Đã hủy' };
+      const rows = orders.map(o => [
+        o.code,
+        o.created_at,
+        o.customer_name || 'Khách lẻ',
+        o.total_amount || 0,
+        o.discount || 0,
+        o.vat_amount || 0,
+        o.final_amount || 0,
+        o.paid_amount || 0,
+        o.debt_amount || 0,
+        o.profit || 0,
+        statusMap[o.status] || o.status || 'Đã hoàn thành'
+      ]);
+      await this.exportTableToExcel(headers, rows, 'BaoCaoDoanhThu', 'bao_cao_doanh_thu_loi_nhuan.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel báo cáo: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // 9. ORDERS & INVOICES VIEW (Hóa đơn & Đơn hàng)
+  // ==========================================
+  async renderOrdersView() {
+    const container = document.getElementById('view-orders');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="order-search-input" class="form-control" style="max-width: 280px;" placeholder="Tìm theo mã đơn, tên/SĐT khách...">
+            <select id="order-search-by" class="form-control" style="max-width: 140px;">
+              <option value="both">Code & Name</option>
+              <option value="code">Code</option>
+              <option value="name">Name</option>
+            </select>
+            <select id="order-period-filter" class="form-control" style="max-width: 140px;">
+              <option value="all">Mọi thời gian</option>
+              <option value="today">Hôm nay</option>
+              <option value="yesterday">Hôm qua</option>
+              <option value="7days">7 ngày qua</option>
+              <option value="this_month">Tháng này</option>
+            </select>
+            <select id="order-status-filter" class="form-control" style="max-width: 175px;">
+              <option value="all">Tất cả trạng thái</option>
+              <option value="completed">Đã hoàn thành</option>
+              <option value="ordered">Khách đang đặt (Đơn đặt)</option>
+              <option value="draft">Bản nháp</option>
+              <option value="cancelled">Đã hủy</option>
+            </select>
+            <select id="order-payment-filter" class="form-control" style="max-width: 140px;">
+              <option value="all">Tất cả PTTT</option>
+              <option value="cash">Tiền mặt</option>
+              <option value="bank">Chuyển khoản</option>
+              <option value="debt">Ghi nợ</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline btn-excel" onclick="App.exportTable('invoices')" title="Xuất file Excel danh sách hóa đơn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
+            <button class="btn btn-primary" onclick="App.navigate('pos')">+ Bán hàng tại quầy (F9)</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Mã đơn</th>
+                  <th>Thời gian</th>
+                  <th>Khách hàng</th>
+                  <th class="text-right">Tiền hàng</th>
+                  <th class="text-right">Giảm giá/KM</th>
+                  <th class="text-right">Khách cần trả</th>
+                  <th class="text-right">Đã thanh toán</th>
+                  <th class="text-right">Còn nợ</th>
+                  <th class="text-center">Trạng thái</th>
+                  <th class="text-right">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="orders-table-body">
+                <tr><td colspan="10" class="empty-state">Đang tải danh sách hóa đơn...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('order-search-input')?.addEventListener('input', () => this.loadOrdersTable());
+    document.getElementById('order-search-by')?.addEventListener('change', () => this.loadOrdersTable());
+    document.getElementById('order-period-filter')?.addEventListener('change', () => this.loadOrdersTable());
+    document.getElementById('order-status-filter')?.addEventListener('change', () => this.loadOrdersTable());
+    document.getElementById('order-payment-filter')?.addEventListener('change', () => this.loadOrdersTable());
+
+    this.loadOrdersTable();
+  },
+
+  async loadOrdersTable() {
+    this._ordersLoadSeq = (this._ordersLoadSeq || 0) + 1;
+    const currentSeq = this._ordersLoadSeq;
+
+    const q = document.getElementById('order-search-input')?.value || '';
+    const searchBy = document.getElementById('order-search-by')?.value || 'both';
+    const period = document.getElementById('order-period-filter')?.value || 'all';
+    const status = document.getElementById('order-status-filter')?.value || 'all';
+    const payment = document.getElementById('order-payment-filter')?.value || 'all';
+
+    try {
+      const res = await API.getOrders({ period, status, payment_method: payment, q, search: q, searchBy });
+      if (this._ordersLoadSeq !== currentSeq) return;
+
+      const tbody = document.getElementById('orders-table-body');
+      if (!tbody) return;
+
+      const orders = this.normalizeOrders(res);
+      let filtered = orders.filter(Boolean);
+      if (q) {
+        if (searchBy === 'code') {
+          filtered = filtered.filter(o => this.matchesSearch(o, q, ['code']));
+        } else if (searchBy === 'name') {
+          filtered = filtered.filter(o => this.matchesSearch(o, q, ['customer_name']));
+        } else {
+          filtered = filtered.filter(o => this.matchesSearch(o, q, ['code', 'customer_name', 'customer_phone', 'notes', 'promotion_code']));
+        }
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-state">Không tìm thấy hóa đơn / đơn hàng phù hợp</td></tr>`;
+        return;
+      }
+
+      const pmMap = { cash: 'Tiền mặt', bank: 'Chuyển khoản', debt: 'Ghi nợ' };
+
+      tbody.innerHTML = filtered.map(o => {
+        let statusBadge = '<span class="badge-tag badge-green">Đã hoàn thành</span>';
+        if (o.status === 'ordered') {
+          statusBadge = '<span class="badge-tag badge-amber" title="Đơn đặt hàng - Chưa xuất kho">Khách đang đặt</span>';
+        } else if (o.status === 'draft') {
+          statusBadge = '<span class="badge-tag badge-gray" title="Hóa đơn nháp - Nhân bản">Bản nháp</span>';
+        } else if (o.status === 'cancelled') {
+          statusBadge = '<span class="badge-tag badge-red">Đã hủy</span>';
+        }
+
+        const pmLabel = pmMap[o.payment_method] || (o.payment_method || 'Tiền mặt');
+        const hasPromo = o.promotion_code || (o.discount > 0);
+
+        return `
+          <tr style="${o.status === 'cancelled' ? 'opacity: 0.65; background: #fafafa;' : ''}">
+            <td>
+              <strong>${o.code}</strong><br>
+              <small style="color: var(--color-text-subtle);">${pmLabel}</small>
+            </td>
+            <td>${o.created_at}</td>
+            <td>
+              <strong>${o.customer_name || 'Khách lẻ'}</strong>
+              ${o.customer_phone ? `<br><small style="color: var(--color-text-subtle);">${o.customer_phone}</small>` : ''}
+            </td>
+            <td class="text-right tabular-nums">${this.formatMoney(o.total_amount)}</td>
+            <td class="text-right tabular-nums" style="color: ${o.discount > 0 ? 'var(--color-danger)' : 'var(--color-text-subtle)'};">
+              ${o.discount > 0 ? '-' + this.formatMoney(o.discount) : '0 đ'}
+              ${o.promotion_code ? `<br><span class="badge-tag badge-purple" style="font-size: 0.68rem;">${o.promotion_code}</span>` : ''}
+            </td>
+            <td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</td>
+            <td class="text-right tabular-nums" style="color: var(--color-success);">${this.formatMoney(o.paid_amount)}</td>
+            <td class="text-right tabular-nums font-bold" style="color: ${o.debt_amount > 0 ? 'var(--color-danger)' : 'var(--color-text-subtle)'};">
+              ${this.formatMoney(o.debt_amount)}
+            </td>
+            <td class="text-center">${statusBadge}</td>
+            <td class="text-right" style="white-space: nowrap;">
+              <button class="btn btn-sm btn-outline" onclick="App.openInvoiceDetailModal(${o.id})" title="Xem & Quản lý hóa đơn">👁 Chi tiết</button>
+              <button class="btn btn-sm btn-outline" onclick="App.cloneOrder(${o.id})" title="Nhân bản đơn sang POS">Nhân bản</button>
+              ${o.status !== 'cancelled' ? `
+                <button class="btn btn-sm btn-outline" onclick="App.openAdjustOrderModal(${o.id})" title="Điều chỉnh trạng thái / ghi chú">Sửa</button>
+                <button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.cancelOrder(${o.id})" title="Hủy hóa đơn / hoàn kho">Hủy</button>
+              ` : ''}
+              <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('order', '${o.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    } catch (err) {
+      if (this._ordersLoadSeq !== currentSeq) return;
+      const tbody = document.getElementById('orders-table-body');
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-state text-danger">Lỗi tải danh sách hóa đơn: ${err.message}</td></tr>`;
+      }
+      App.toast('Lỗi tải danh sách hóa đơn: ' + err.message, 'error');
+    }
+  },
+
+  async exportOrdersExcel() {
+    try {
+      const period = document.getElementById('order-period-filter')?.value || 'all';
+      const status = document.getElementById('order-status-filter')?.value || 'all';
+      const payment = document.getElementById('order-payment-filter')?.value || 'all';
+      const res = await API.getOrders({ period, status, payment_method: payment });
+      const orders = this.normalizeOrders(res).filter(Boolean);
+      const headers = ['Mã đơn', 'Thời gian', 'Khách hàng', 'SĐT khách', 'Tiền hàng (VNĐ)', 'Chiết khấu (VNĐ)', 'Mã khuyến mãi', 'Thuế VAT (VNĐ)', 'Khách cần trả (VNĐ)', 'Đã thanh toán (VNĐ)', 'Còn ghi nợ (VNĐ)', 'PTTT', 'Trạng thái', 'Ghi chú'];
+      const pmMap = { cash: 'Tiền mặt', bank: 'Chuyển khoản', debt: 'Ghi nợ' };
+      const statusMap = { completed: 'Đã hoàn thành', ordered: 'Khách đang đặt', draft: 'Bản nháp', cancelled: 'Đã hủy' };
+      const rows = orders.map(o => [
+        o.code,
+        o.created_at,
+        o.customer_name || 'Khách lẻ',
+        o.customer_phone || '',
+        o.total_amount || 0,
+        o.discount || 0,
+        o.promotion_code || '',
+        o.vat_amount || 0,
+        o.final_amount || 0,
+        o.paid_amount || 0,
+        o.debt_amount || 0,
+        pmMap[o.payment_method] || (o.payment_method || 'Tiền mặt'),
+        statusMap[o.status] || o.status || 'Đã hoàn thành',
+        o.notes || ''
+      ]);
+      await this.exportTableToExcel(headers, rows, 'DanhSachHoaDon', 'danh_sach_hoa_don.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel hóa đơn: ' + err.message, 'error');
     }
   },
 
   async viewOrderDetail(orderId) {
     try {
       const o = await API.getOrder(orderId);
-      alert(`ĐƠN HÀNG ${o.code}\n\nKhách: ${o.customer_name}\nThời gian: ${o.created_at}\nTổng tiền hàng: ${this.formatMoney(o.total_amount)}\nChiết khấu: ${this.formatMoney(o.discount)}\nThuế VAT: ${this.formatMoney(o.vat_amount)}\nKhách cần trả: ${this.formatMoney(o.final_amount)}\nTiền khách đưa: ${this.formatMoney(o.customer_paid)}\nĐã thanh toán: ${this.formatMoney(o.paid_amount)}\nTiền thừa thối lại: ${this.formatMoney(o.change_amount)}\nCòn ghi nợ: ${this.formatMoney(o.debt_amount)}\nLợi nhuận gộp đơn: ${this.formatMoney(o.profit)}\n\nChi tiết sản phẩm:\n` +
-        o.items.map(i => `- ${i.product_name}: ${i.quantity} ${i.unit} x ${this.formatMoney(i.sale_price)}${i.is_custom_price ? ' (Giá riêng)' : ''} = ${this.formatMoney(i.subtotal)}`).join('\n')
-      );
+      const modal = document.getElementById('order-detail-modal');
+      const title = document.getElementById('od-title');
+      const subtitle = document.getElementById('od-subtitle');
+      const body = document.getElementById('od-body');
+      const footer = document.getElementById('od-footer');
+
+      if (!modal || !body) return;
+
+      let statusBadge = '<span class="badge-tag badge-green">Đã hoàn thành</span>';
+      if (o.status === 'ordered') statusBadge = '<span class="badge-tag badge-amber">Khách đang đặt (Đơn đặt hàng)</span>';
+      if (o.status === 'draft') statusBadge = '<span class="badge-tag badge-gray">Bản nháp</span>';
+      if (o.status === 'cancelled') statusBadge = '<span class="badge-tag badge-red">Đã hủy</span>';
+
+      const pmMap = { cash: 'Tiền mặt', bank: 'Chuyển khoản', debt: 'Ghi nợ' };
+      const pmLabel = pmMap[o.payment_method] || (o.payment_method || 'Tiền mặt');
+
+      title.textContent = `Hóa đơn: ${o.code}`;
+      subtitle.innerHTML = `Thời gian: <strong>${o.created_at}</strong> | Trạng thái: ${statusBadge}`;
+
+      body.innerHTML = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; background: var(--color-surface-muted); padding: 12px; border-radius: var(--radius-md);">
+          <div>
+            <div style="font-size: 0.8125rem; color: var(--color-text-secondary);">Khách hàng:</div>
+            <div style="font-weight: 700; font-size: 1rem; color: var(--color-text-main);">${o.customer_name || 'Khách lẻ'}</div>
+            <div style="font-size: 0.8125rem; color: var(--color-text-subtle);">${o.customer_phone || ''}</div>
+          </div>
+          <div>
+            <div style="font-size: 0.8125rem; color: var(--color-text-secondary);">Hình thức thanh toán:</div>
+            <div style="font-weight: 700;">${pmLabel}</div>
+            ${o.promotion_code ? `<div style="font-size: 0.8125rem; color: var(--color-purple-text); font-weight: 600;">Khuyến mãi: ${o.promotion_code}</div>` : ''}
+          </div>
+        </div>
+
+        <div style="font-weight: 600; margin-bottom: 8px;">Danh sách sản phẩm (${(o.items || []).length} mặt hàng):</div>
+        <table class="table" style="font-size: 0.85rem; margin-bottom: 16px;">
+          <thead>
+            <tr>
+              <th>Sản phẩm</th>
+              <th class="text-center">ĐVT</th>
+              <th class="text-center">SL</th>
+              <th class="text-right">Đơn giá</th>
+              <th class="text-right">Thành tiền</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(o.items || []).map(i => `
+              <tr>
+                <td>
+                  <strong>${i.product_name}</strong>
+                  ${i.unit_conversion_rate > 1 ? `<br><small style="color: var(--color-text-subtle);">(Quy đổi: x${i.unit_conversion_rate})</small>` : ''}
+                  ${i.is_gift ? '<br><span class="badge-tag badge-purple">Hàng tặng KM</span>' : ''}
+                </td>
+                <td class="text-center"><strong>${i.unit || 'Cái'}</strong></td>
+                <td class="text-center font-bold">${i.quantity}</td>
+                <td class="text-right tabular-nums">${this.formatMoney(i.sale_price)}</td>
+                <td class="text-right tabular-nums font-bold">${this.formatMoney(i.subtotal)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+
+        <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 12px; line-height: 1.8;">
+          <div style="display: flex; justify-content: space-between;">
+            <span>Tổng tiền hàng:</span>
+            <span class="tabular-nums font-bold">${this.formatMoney(o.total_amount)}</span>
+          </div>
+          ${o.discount > 0 ? `
+            <div style="display: flex; justify-content: space-between; color: var(--color-danger);">
+              <span>Chiết khấu / Giảm giá:</span>
+              <span class="tabular-nums font-bold">-${this.formatMoney(o.discount)}</span>
+            </div>
+          ` : ''}
+          ${o.vat_amount > 0 ? `
+            <div style="display: flex; justify-content: space-between;">
+              <span>Thuế VAT (${o.vat_percent}%):</span>
+              <span class="tabular-nums">+${this.formatMoney(o.vat_amount)}</span>
+            </div>
+          ` : ''}
+          <div style="display: flex; justify-content: space-between; font-size: 1.05rem; font-weight: 800; border-top: 1px dashed var(--color-border); padding-top: 6px; margin-top: 6px;">
+            <span>KHÁCH CẦN TRẢ:</span>
+            <span class="tabular-nums" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span>Khách đã thanh toán:</span>
+            <span class="tabular-nums font-bold" style="color: var(--color-success);">${this.formatMoney(o.paid_amount)}</span>
+          </div>
+          ${o.debt_amount > 0 ? `
+            <div style="display: flex; justify-content: space-between; color: var(--color-danger); font-weight: 700;">
+              <span>Ghi nợ:</span>
+              <span class="tabular-nums">${this.formatMoney(o.debt_amount)}</span>
+            </div>
+          ` : ''}
+          ${o.profit !== undefined ? `
+            <div style="display: flex; justify-content: space-between; font-size: 0.8125rem; color: var(--color-text-muted); border-top: 1px dotted var(--color-border); margin-top: 6px; padding-top: 4px;">
+              <span>Lợi nhuận gộp đơn hàng:</span>
+              <span class="tabular-nums font-bold" style="color: var(--color-success);">+${this.formatMoney(o.profit)}</span>
+            </div>
+          ` : ''}
+        </div>
+        ${o.notes ? `<div style="margin-top: 10px; font-size: 0.8125rem; color: var(--color-text-subtle);"><strong>Ghi chú:</strong> ${o.notes}</div>` : ''}
+      `;
+
+      footer.innerHTML = `
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-outline" onclick="App.viewEntityTimeline('order', '${o.code}')" title="Xem lịch sử kiểm toán">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+            Lịch sử
+          </button>
+          <button class="btn btn-outline" onclick="App.cloneOrder(${o.id})">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Nhân bản sang POS
+          </button>
+          ${o.status !== 'cancelled' ? `
+            <button class="btn btn-outline text-danger" style="color: var(--color-danger);" onclick="App.cancelOrder(${o.id})">Hủy đơn</button>
+          ` : ''}
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-primary" onclick="POS.showReceiptModal(${JSON.stringify(o).replace(/"/g, '&quot;')})">In lại hóa đơn</button>
+          <button class="btn btn-outline" data-close-modal="order-detail-modal">Đóng</button>
+        </div>
+      `;
+
+      modal.classList.add('active');
     } catch (e) {
-      App.toast('Không thể tải chi tiết đơn hàng: ' + e.message, 'error');
+      App.toast('Không thể tải chi tiết hóa đơn: ' + e.message, 'error');
+    }
+  },
+
+  async cloneOrder(orderId) {
+    try {
+      const res = await API.cloneOrder(orderId);
+      this.navigate('pos');
+      POS.loadOrder(res.order);
+      // close modal if open
+      document.getElementById('order-detail-modal')?.classList.remove('active');
+    } catch (err) {
+      App.toast('Lỗi nhân bản đơn hàng: ' + err.message, 'error');
+    }
+  },
+
+  async openAdjustOrderModal(orderId) {
+    try {
+      const o = await API.getOrder(orderId);
+      document.getElementById('oa-order-id').value = o.id;
+      document.getElementById('oa-code').value = o.code;
+      document.getElementById('oa-customer-name').value = o.customer_name || '';
+      document.getElementById('oa-status').value = o.status || 'completed';
+      document.getElementById('oa-notes').value = o.notes || '';
+      document.getElementById('order-adjust-modal').classList.add('active');
+    } catch (err) {
+      App.toast('Lỗi mở form điều chỉnh: ' + err.message, 'error');
+    }
+  },
+
+  async saveOrderAdjustment() {
+    const id = document.getElementById('oa-order-id').value;
+    const customerName = document.getElementById('oa-customer-name').value.trim();
+    const status = document.getElementById('oa-status').value;
+    const notes = document.getElementById('oa-notes').value.trim();
+
+    try {
+      await API.updateOrder(id, { customer_name: customerName, status: status, notes: notes });
+      App.toast('Cập nhật đơn hàng thành công!', 'success');
+      document.getElementById('order-adjust-modal').classList.remove('active');
+      this.loadOrdersTable();
+      this.loadTopFundSummary();
+    } catch (err) {
+      App.toast('Lỗi điều chỉnh đơn hàng: ' + err.message, 'error');
+    }
+  },
+
+  async cancelOrder(orderId) {
+    if (!confirm('Bạn có chắc chắn muốn HỦY đơn hàng này? Hệ thống sẽ tự động hoàn lại tồn kho, cấn trừ công nợ và hoàn dòng tiền!')) {
+      return;
+    }
+
+    try {
+      await API.deleteOrder(orderId);
+      App.toast('Đã hủy đơn hàng thành công. Tồn kho và công nợ đã được hoàn lại!', 'success');
+      document.getElementById('order-detail-modal')?.classList.remove('active');
+      this.loadOrdersTable();
+      this.loadTopFundSummary();
+    } catch (err) {
+      App.toast('Lỗi hủy đơn hàng: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // INVOICE DETAIL & MANAGEMENT (CRUD + DUPLICATE)
+  // ==========================================
+  currentInvoiceModalData: null,
+  isInvoiceEditing: false,
+
+  async openInvoiceDetailModal(invoiceId) {
+    try {
+      const inv = await API.getInvoice(invoiceId);
+      this.currentInvoiceModalData = inv;
+      this.isInvoiceEditing = false;
+
+      const modal = document.getElementById('invoice-detail-modal');
+      if (!modal) return;
+
+      const idElem = document.getElementById('inv-modal-id');
+      const titleElem = document.getElementById('inv-modal-title');
+      const subtitleElem = document.getElementById('inv-modal-subtitle');
+      if (idElem) idElem.value = inv.id;
+      if (titleElem) titleElem.textContent = `Hóa đơn: ${inv.code || ('HD' + inv.id)}`;
+      if (subtitleElem) subtitleElem.textContent = `Thời gian: ${inv.created_at || '---'} | Nhân viên: ${inv.user_name || 'Hệ thống'}`;
+
+      const codeInput = document.getElementById('inv-modal-code');
+      const custInput = document.getElementById('inv-modal-customer');
+      const dateInput = document.getElementById('inv-modal-date');
+      const statusSelect = document.getElementById('inv-modal-status');
+      const notesInput = document.getElementById('inv-modal-notes');
+
+      if (codeInput) codeInput.value = inv.code || '';
+      if (custInput) {
+        custInput.value = inv.customer_name || 'Khách lẻ';
+        custInput.readOnly = true;
+      }
+      if (dateInput) dateInput.value = inv.created_at || '';
+      if (statusSelect) {
+        statusSelect.value = inv.status || 'completed';
+        statusSelect.disabled = true;
+      }
+      if (notesInput) {
+        notesInput.value = inv.notes || '';
+        notesInput.readOnly = true;
+      }
+
+      // Render line-items
+      const itemsBody = document.getElementById('inv-modal-items-body');
+      if (itemsBody) {
+        const items = inv.items || [];
+        if (items.length === 0) {
+          itemsBody.innerHTML = `<tr><td colspan="5" class="empty-state">Không có mặt hàng nào</td></tr>`;
+        } else {
+          itemsBody.innerHTML = items.map(item => `
+            <tr>
+              <td>
+                <strong>${item.product_name}</strong>
+                ${item.product_code ? `<br><small style="color: var(--color-text-subtle);">${item.product_code}</small>` : ''}
+                ${item.is_gift ? '<br><span class="badge-tag badge-purple">Hàng tặng KM</span>' : ''}
+              </td>
+              <td class="text-center"><strong>${item.unit || 'Cái'}</strong></td>
+              <td class="text-center font-bold">${item.quantity}</td>
+              <td class="text-right tabular-nums">${this.formatMoney(item.sale_price)}</td>
+              <td class="text-right tabular-nums font-bold">${this.formatMoney(item.subtotal !== undefined ? item.subtotal : (item.quantity * item.sale_price))}</td>
+            </tr>
+          `).join('');
+        }
+      }
+
+      // Summary totals
+      const totalElem = document.getElementById('inv-modal-total');
+      const discElem = document.getElementById('inv-modal-discount');
+      const vatElem = document.getElementById('inv-modal-vat');
+      const finalElem = document.getElementById('inv-modal-final');
+      const paidElem = document.getElementById('inv-modal-paid');
+      const debtElem = document.getElementById('inv-modal-debt');
+
+      if (totalElem) totalElem.textContent = this.formatMoney(inv.total_amount || 0);
+      if (discElem) discElem.textContent = '-' + this.formatMoney(inv.discount || 0);
+      if (vatElem) vatElem.textContent = '+' + this.formatMoney(inv.vat_amount || 0);
+      if (finalElem) finalElem.textContent = this.formatMoney(inv.final_amount || 0);
+      if (paidElem) paidElem.textContent = this.formatMoney(inv.paid_amount || 0);
+      if (debtElem) debtElem.textContent = this.formatMoney(inv.debt_amount || 0);
+
+      // Buttons
+      const btnEdit = document.getElementById('inv-btn-edit');
+      const btnSave = document.getElementById('inv-btn-save');
+      if (btnEdit) {
+        btnEdit.style.display = 'inline-block';
+        btnEdit.textContent = 'Sửa';
+      }
+      if (btnSave) btnSave.style.display = 'none';
+
+      modal.classList.add('active');
+    } catch (err) {
+      this.toast('Lỗi tải chi tiết hóa đơn: ' + err.message, 'error');
+    }
+  },
+
+  toggleEditInvoiceModal() {
+    this.isInvoiceEditing = !this.isInvoiceEditing;
+    const custInput = document.getElementById('inv-modal-customer');
+    const statusSelect = document.getElementById('inv-modal-status');
+    const notesInput = document.getElementById('inv-modal-notes');
+    const btnEdit = document.getElementById('inv-btn-edit');
+    const btnSave = document.getElementById('inv-btn-save');
+
+    if (this.isInvoiceEditing) {
+      if (custInput) custInput.readOnly = false;
+      if (statusSelect) statusSelect.disabled = false;
+      if (notesInput) notesInput.readOnly = false;
+      if (btnEdit) btnEdit.textContent = 'Hủy sửa';
+      if (btnSave) btnSave.style.display = 'inline-block';
+      this.toast('Đã bật chế độ sửa hóa đơn. Bạn có thể thay đổi khách hàng, trạng thái và ghi chú.', 'info');
+    } else {
+      if (custInput) {
+        custInput.value = this.currentInvoiceModalData?.customer_name || 'Khách lẻ';
+        custInput.readOnly = true;
+      }
+      if (statusSelect) {
+        statusSelect.value = this.currentInvoiceModalData?.status || 'completed';
+        statusSelect.disabled = true;
+      }
+      if (notesInput) {
+        notesInput.value = this.currentInvoiceModalData?.notes || '';
+        notesInput.readOnly = true;
+      }
+      if (btnEdit) btnEdit.textContent = 'Sửa';
+      if (btnSave) btnSave.style.display = 'none';
+    }
+  },
+
+  async saveInvoiceModal() {
+    const id = document.getElementById('inv-modal-id')?.value;
+    if (!id) return;
+    const customer_name = document.getElementById('inv-modal-customer')?.value?.trim();
+    const status = document.getElementById('inv-modal-status')?.value;
+    const notes = document.getElementById('inv-modal-notes')?.value?.trim();
+
+    try {
+      await API.updateInvoice(id, { customer_name, status, notes });
+      this.toast('Cập nhật hóa đơn thành công!', 'success');
+      this.isInvoiceEditing = false;
+      await this.openInvoiceDetailModal(id);
+      this.loadOrdersTable();
+      this.loadTopFundSummary();
+    } catch (err) {
+      this.toast('Lỗi cập nhật hóa đơn: ' + err.message, 'error');
+    }
+  },
+
+  async deleteInvoiceModal() {
+    const id = document.getElementById('inv-modal-id')?.value;
+    if (!id) return;
+    if (!confirm('Bạn có chắc chắn muốn xóa hóa đơn này? Tồn kho và công nợ sẽ được hoàn lại.')) return;
+    try {
+      await API.deleteInvoice(id);
+      this.toast('Đã xóa hóa đơn thành công!', 'success');
+      document.getElementById('invoice-detail-modal')?.classList.remove('active');
+      this.loadOrdersTable();
+      this.loadTopFundSummary();
+    } catch (err) {
+      this.toast('Lỗi xóa hóa đơn: ' + err.message, 'error');
+    }
+  },
+
+  async duplicateInvoiceModal() {
+    const id = document.getElementById('inv-modal-id')?.value;
+    if (!id) return;
+    try {
+      const res = await API.duplicateInvoice(id);
+      this.toast(`Đã nhân bản hóa đơn thành công! (Mã hóa đơn mới: ID #${res.id})`, 'success');
+      document.getElementById('invoice-detail-modal')?.classList.remove('active');
+      this.loadOrdersTable();
+      await this.openInvoiceDetailModal(res.id);
+    } catch (err) {
+      this.toast('Lỗi nhân bản hóa đơn: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // CUSTOMER DETAIL & ORDER SUMMARY MODAL
+  // ==========================================
+  async openCustomerDetailModal(customerId) {
+    try {
+      const customers = await API.getCustomers();
+      const customer = customers.find(c => c.id == customerId);
+      if (!customer) {
+        this.toast('Không tìm thấy thông tin khách hàng', 'error');
+        return;
+      }
+
+      let orderCount = 0;
+      try {
+        const countRes = await API.getCustomerOrdersCount(customerId);
+        orderCount = countRes.orderCount !== undefined ? countRes.orderCount : 0;
+      } catch (ce) {
+        console.warn('Could not fetch customer order count', ce);
+      }
+
+      let customerOrders = [];
+      try {
+        const res = await API.getOrders({ customer_id: customerId, limit: 10 });
+        customerOrders = this.normalizeOrders(res).filter(Boolean);
+      } catch (oe) {
+        console.warn('Could not fetch customer orders', oe);
+      }
+
+      const modal = document.getElementById('customer-detail-modal');
+      if (!modal) return;
+
+      document.getElementById('cdm-name').textContent = customer.name;
+      document.getElementById('cdm-code').textContent = `Mã: ${customer.code} | Ngày tạo: ${customer.created_at || '---'}`;
+      document.getElementById('cdm-phone').textContent = customer.phone || 'Chưa cập nhật';
+      document.getElementById('cdm-group').textContent = customer.group_name || 'Khách lẻ';
+      document.getElementById('cdm-address').textContent = customer.address || 'Chưa cập nhật';
+
+      document.getElementById('cdm-order-count').textContent = orderCount;
+      document.getElementById('cdm-total-spent').textContent = this.formatMoney(customer.total_spent || 0);
+      document.getElementById('cdm-debt').textContent = this.formatMoney(customer.debt || 0);
+
+      const recentTbody = document.getElementById('cdm-recent-orders-body');
+      if (recentTbody) {
+        if (!customerOrders || customerOrders.length === 0) {
+          recentTbody.innerHTML = `<tr><td colspan="5" class="empty-state">Khách hàng chưa có đơn hàng nào</td></tr>`;
+        } else {
+          const statusClassMap = { completed: 'badge-green', ordered: 'badge-amber', draft: 'badge-gray', cancelled: 'badge-red' };
+          const statusTextMap = { completed: 'Hoàn thành', ordered: 'Đang đặt', draft: 'Bản nháp', cancelled: 'Đã hủy' };
+          recentTbody.innerHTML = customerOrders.map(o => `
+            <tr>
+              <td><strong>${o.code}</strong></td>
+              <td>${o.created_at}</td>
+              <td class="text-right font-bold tabular-nums">${this.formatMoney(o.final_amount)}</td>
+              <td class="text-center">
+                <span class="badge-tag ${statusClassMap[o.status] || 'badge-green'}">
+                  ${statusTextMap[o.status] || o.status || 'Hoàn thành'}
+                </span>
+              </td>
+              <td class="text-right" style="white-space: nowrap;">
+                <button class="btn btn-sm btn-outline" onclick="document.getElementById('customer-detail-modal').classList.remove('active'); App.openInvoiceDetailModal(${o.id});">
+                  Xem HĐ
+                </button>
+              </td>
+            </tr>
+          `).join('');
+        }
+      }
+
+      const viewAllBtn = document.getElementById('cdm-view-all-orders-btn');
+      if (viewAllBtn) {
+        viewAllBtn.onclick = () => {
+          modal.classList.remove('active');
+          this.navigate('orders');
+          const searchInput = document.getElementById('order-search-input');
+          if (searchInput) {
+            searchInput.value = customer.name;
+            this.loadOrdersTable();
+          }
+        };
+      }
+
+      modal.classList.add('active');
+    } catch (err) {
+      this.toast('Lỗi tải thông tin chi tiết khách hàng: ' + err.message, 'error');
+    }
+  },
+
+  // ==========================================
+  // 10. PROMOTIONS VIEW (Chương trình khuyến mãi)
+  // ==========================================
+  async renderPromotionsView() {
+    const container = document.getElementById('view-promotions');
+    if (!container) return;
+
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header">
+          <div style="display: flex; gap: 10px; align-items: center; flex: 1; flex-wrap: wrap;">
+            <input type="text" id="promo-search-input" class="form-control" style="max-width: 280px;" placeholder="Tìm theo tên, mã khuyến mãi...">
+            <select id="promo-active-filter" class="form-control" style="max-width: 170px;">
+              <option value="all">Tất cả chương trình</option>
+              <option value="active">Đang áp dụng</option>
+            </select>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-outline btn-excel" onclick="App.exportPromotionsExcel()" title="Xuất file Excel danh sách khuyến mãi">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Excel
+            </button>
+            <button class="btn btn-primary" onclick="App.openCreatePromotionModal()">+ Thêm khuyến mãi</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding: 0;">
+          <div class="table-responsive">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Mã KM</th>
+                  <th>Tên chương trình</th>
+                  <th>Hình thức khuyến mãi</th>
+                  <th class="text-right">Mức ưu đãi</th>
+                  <th class="text-right">Đơn tối thiểu</th>
+                  <th class="text-center">Thời gian áp dụng</th>
+                  <th class="text-center">Kích hoạt</th>
+                  <th class="text-right">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody id="promotions-table-body">
+                <tr><td colspan="8" class="empty-state">Đang tải chương trình khuyến mãi...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('promo-search-input')?.addEventListener('input', () => this.loadPromotionsTable());
+    document.getElementById('promo-active-filter')?.addEventListener('change', () => this.loadPromotionsTable());
+    this.loadPromotionsTable();
+  },
+
+  async loadPromotionsTable() {
+    const q = document.getElementById('promo-search-input')?.value || '';
+    const activeFilter = document.getElementById('promo-active-filter')?.value || 'all';
+
+    try {
+      const promotions = await API.getPromotions(activeFilter === 'active');
+      const tbody = document.getElementById('promotions-table-body');
+      if (!tbody) return;
+
+      let filtered = promotions;
+      if (q) {
+        filtered = filtered.filter(p => this.matchesSearch(p, q, ['code', 'name', 'type', 'notes']));
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không tìm thấy chương trình khuyến mãi nào</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(p => {
+        let typeText = 'Giảm % đơn hàng';
+        let valText = `${p.discount_value}%`;
+        if (p.type === 'order_discount_amount') {
+          typeText = 'Giảm tiền mặt';
+          valText = this.formatMoney(p.discount_value);
+        } else if (p.type === 'buy_x_get_y') {
+          typeText = 'Mua X tặng Y';
+          valText = `Mua ${p.buy_quantity} tặng ${p.gift_quantity}`;
+        }
+
+        const dateRange = (p.start_date || p.end_date)
+          ? `${p.start_date || '---'} → ${p.end_date || '---'}`
+          : '<span style="color: var(--color-text-subtle);">Vô thời hạn</span>';
+
+        return `
+          <tr>
+            <td><strong>${p.code}</strong></td>
+            <td>
+              <div style="font-weight: 600; color: var(--color-text-main);">${p.name}</div>
+              <small style="color: var(--color-text-subtle);">${p.notes || ''}</small>
+            </td>
+            <td><span class="badge-tag badge-purple">${typeText}</span></td>
+            <td class="text-right font-bold tabular-nums" style="color: var(--color-primary); font-size: 0.95rem;">${valText}</td>
+            <td class="text-right tabular-nums">${p.min_order_amount > 0 ? this.formatMoney(p.min_order_amount) : '<span style="color: var(--color-text-disabled);">Không yêu cầu</span>'}</td>
+            <td class="text-center" style="font-size: 0.8125rem;">${dateRange}</td>
+            <td class="text-center">
+              <button class="btn btn-sm ${p.is_active ? 'btn-success' : 'btn-outline'}" onclick="App.togglePromotion(${p.id})" title="Nhấp để bật/tắt">
+                ${p.is_active ? 'Đang bật' : 'Đã tắt'}
+              </button>
+            </td>
+            <td class="text-right">
+              <button class="btn btn-sm btn-outline" onclick="App.openEditPromotionModal(${p.id})">Sửa</button>
+              <button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.deletePromotion(${p.id})">Xóa</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    } catch (err) {
+      App.toast('Lỗi tải danh sách khuyến mãi: ' + err.message, 'error');
+    }
+  },
+
+  async exportPromotionsExcel() {
+    try {
+      const promotions = await API.getPromotions(false);
+      const headers = ['Mã KM', 'Tên chương trình', 'Loại khuyến mãi', 'Mức ưu đãi', 'Đơn tối thiểu (VNĐ)', 'Từ ngày', 'Đến ngày', 'Trạng thái', 'Ghi chú'];
+      const rows = promotions.map(p => {
+        let typeStr = p.type === 'order_discount_percent' ? 'Giảm % đơn hàng' : (p.type === 'order_discount_amount' ? 'Giảm tiền mặt' : 'Mua X tặng Y');
+        let valStr = p.type === 'order_discount_percent' ? `${p.discount_value}%` : (p.type === 'order_discount_amount' ? p.discount_value : `Mua ${p.buy_quantity} tặng ${p.gift_quantity}`);
+        return [
+          p.code,
+          p.name,
+          typeStr,
+          valStr,
+          p.min_order_amount || 0,
+          p.start_date || '',
+          p.end_date || '',
+          p.is_active ? 'Đang kích hoạt' : 'Đã tắt',
+          p.notes || ''
+        ];
+      });
+      await this.exportTableToExcel(headers, rows, 'DanhSachKhuyenMai', 'danh_sach_khuyen_mai.xlsx');
+    } catch (err) {
+      this.toast('Lỗi xuất Excel khuyến mãi: ' + err.message, 'error');
+    }
+  },
+
+  openCreatePromotionModal() {
+    const modal = document.getElementById('promotion-modal');
+    document.getElementById('promo-modal-title').textContent = 'Thêm chương trình khuyến mãi';
+    document.getElementById('promo-id').value = '';
+    document.getElementById('promo-code').value = '';
+    document.getElementById('promo-type').value = 'order_discount_percent';
+    document.getElementById('promo-name').value = '';
+    document.getElementById('promo-val').value = '10';
+    document.getElementById('promo-min-order').value = '0';
+    document.getElementById('promo-buy-qty').value = '1';
+    document.getElementById('promo-gift-qty').value = '1';
+    document.getElementById('promo-start-date').value = '';
+    document.getElementById('promo-end-date').value = '';
+    document.getElementById('promo-notes').value = '';
+    this.onPromoTypeChange('order_discount_percent');
+    modal.classList.add('active');
+  },
+
+  async openEditPromotionModal(id) {
+    try {
+      const promotions = await API.getPromotions(false);
+      const p = promotions.find(x => x.id === id);
+      if (!p) return;
+
+      const modal = document.getElementById('promotion-modal');
+      document.getElementById('promo-modal-title').textContent = 'Chỉnh sửa: ' + p.name;
+      document.getElementById('promo-id').value = p.id;
+      document.getElementById('promo-code').value = p.code;
+      document.getElementById('promo-type').value = p.type || 'order_discount_percent';
+      document.getElementById('promo-name').value = p.name;
+      document.getElementById('promo-val').value = p.discount_value || 0;
+      document.getElementById('promo-min-order').value = p.min_order_amount || 0;
+      document.getElementById('promo-buy-qty').value = p.buy_quantity || 1;
+      document.getElementById('promo-gift-qty').value = p.gift_quantity || 1;
+      document.getElementById('promo-start-date').value = p.start_date || '';
+      document.getElementById('promo-end-date').value = p.end_date || '';
+      document.getElementById('promo-notes').value = p.notes || '';
+      this.onPromoTypeChange(p.type || 'order_discount_percent');
+      modal.classList.add('active');
+    } catch (e) {
+      App.toast('Lỗi mở form khuyến mãi: ' + e.message, 'error');
+    }
+  },
+
+  onPromoTypeChange(type) {
+    const valLabel = document.getElementById('promo-val-label');
+    const discountRow = document.getElementById('promo-discount-row');
+    const giftRow = document.getElementById('promo-gift-row');
+
+    if (type === 'buy_x_get_y') {
+      if (discountRow) discountRow.style.display = 'none';
+      if (giftRow) giftRow.style.display = 'flex';
+    } else {
+      if (discountRow) discountRow.style.display = 'flex';
+      if (giftRow) giftRow.style.display = 'none';
+      if (valLabel) {
+        valLabel.textContent = type === 'order_discount_percent' 
+          ? 'Mức giảm (%) (*):' 
+          : 'Mức giảm (VNĐ) (*):';
+      }
+    }
+  },
+
+  async savePromotionForm() {
+    const id = document.getElementById('promo-id').value;
+    const name = document.getElementById('promo-name').value.trim();
+    if (!name) {
+      App.toast('Tên chương trình khuyến mãi không được để trống', 'warning');
+      return;
+    }
+
+    const payload = {
+      code: document.getElementById('promo-code').value.trim(),
+      name: name,
+      type: document.getElementById('promo-type').value,
+      discount_value: parseFloat(document.getElementById('promo-val').value) || 0,
+      min_order_amount: parseFloat(document.getElementById('promo-min-order').value) || 0,
+      buy_quantity: parseInt(document.getElementById('promo-buy-qty').value) || 1,
+      gift_quantity: parseInt(document.getElementById('promo-gift-qty').value) || 1,
+      start_date: document.getElementById('promo-start-date').value || null,
+      end_date: document.getElementById('promo-end-date').value || null,
+      notes: document.getElementById('promo-notes').value.trim()
+    };
+
+    try {
+      if (id) {
+        await API.updatePromotion(id, payload);
+        App.toast('Cập nhật khuyến mãi thành công', 'success');
+      } else {
+        await API.createPromotion(payload);
+        App.toast('Thêm khuyến mãi mới thành công', 'success');
+      }
+      document.getElementById('promotion-modal').classList.remove('active');
+      this.loadPromotionsTable();
+    } catch (err) {
+      App.toast('Lỗi lưu khuyến mãi: ' + err.message, 'error');
+    }
+  },
+
+  async togglePromotion(id) {
+    try {
+      const res = await API.togglePromotion(id);
+      App.toast(`Đã ${res.is_active ? 'kích hoạt' : 'tắt'} chương trình khuyến mãi!`, 'success');
+      this.loadPromotionsTable();
+    } catch (err) {
+      App.toast('Lỗi cập nhật trạng thái: ' + err.message, 'error');
+    }
+  },
+
+  async deletePromotion(id) {
+    if (!confirm('Bạn có chắc chắn muốn xóa chương trình khuyến mãi này?')) return;
+    try {
+      await API.deletePromotion(id);
+      App.toast('Đã xóa chương trình khuyến mãi', 'success');
+      this.loadPromotionsTable();
+    } catch (err) {
+      App.toast('Lỗi xóa khuyến mãi: ' + err.message, 'error');
     }
   },
 
@@ -2054,6 +4108,16 @@ const App = {
                 <a href="/api/backup/download" class="btn btn-success" style="width: 100%; text-decoration: none;" download>
                   Tải file sao lưu Database (.db)
                 </a>
+                <div style="margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--color-border);">
+                  <strong style="font-size: 0.88rem; display: block; margin-bottom: 6px; color: var(--color-text-main);">Phục hồi cơ sở dữ liệu (Restore):</strong>
+                  <p style="font-size: 0.8125rem; color: var(--color-text-subtle); margin-bottom: 10px;">
+                    Chọn tệp tin backup SQLite (.db) để khôi phục toàn bộ hệ thống. Bản dữ liệu hiện tại sẽ được tự động sao lưu dự phòng an toàn.
+                  </p>
+                  <input type="file" id="backup-restore-file" accept=".db,application/x-sqlite3" style="display: none;" onchange="App.handleBackupRestore(event)">
+                  <button class="btn btn-outline" style="width: 100%; border-color: #d97706; color: #b45309; font-weight: 600;" onclick="document.getElementById('backup-restore-file').click()">
+                    Chọn file .db để Phục hồi (Restore)
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2100,6 +4164,39 @@ const App = {
     }
   },
 
+  async handleBackupRestore(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+
+    if (!confirm(`CẢNH BÁO PHỤC HỒI:\n\nBạn có chắc chắn muốn khôi phục cơ sở dữ liệu từ file "${file.name}"?\n\nDữ liệu hiện tại sẽ được thay thế (hệ thống sẽ tự động lưu một bản sao lưu an toàn trước khi thay thế).`)) {
+      event.target.value = '';
+      return;
+    }
+
+    try {
+      App.toast('Đang đọc và kiểm tra tệp tin sao lưu...', 'info');
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const base64Data = e.target.result;
+          const res = await API.restoreBackup(base64Data);
+          App.toast(res.message || 'Phục hồi cơ sở dữ liệu thành công!', 'success');
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        } catch (err) {
+          App.toast('Lỗi phục hồi cơ sở dữ liệu: ' + err.message, 'error');
+        } finally {
+          event.target.value = '';
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      App.toast('Lỗi đọc file: ' + err.message, 'error');
+      event.target.value = '';
+    }
+  },
+
   // ==========================================
   // AUTHENTICATION & ACCESS CONTROL (RBAC)
   // ==========================================
@@ -2137,6 +4234,7 @@ const App = {
   renderAccessDenied(requiredPerm) {
     const roleName = this.currentUser ? this.getRoleName(this.currentUser.role) : 'Khách';
     const fullName = this.currentUser ? this.currentUser.full_name : 'Người dùng';
+    const isGuest = !this.currentUser;
     return `
       <div class="empty-state" style="padding: 60px 20px;">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--color-danger)" stroke-width="2" class="empty-state-icon">
@@ -2148,7 +4246,7 @@ const App = {
         <div style="font-size: 0.875rem; color: var(--color-text-secondary); max-width: 480px; margin: 0 auto 18px; line-height: 1.5;">
           Tài khoản của bạn (<strong>${fullName}</strong> - Vai trò: <strong>${roleName}</strong>) không được phân quyền thực hiện chức năng này (${requiredPerm}). Vui lòng liên hệ Quản trị viên hệ thống để được cấp quyền.
         </div>
-        <button class="btn btn-primary" onclick="App.navigate('dashboard')">Quay lại Tổng quan</button>
+        ${isGuest ? '<button class="btn btn-primary" onclick="App.showAuthModal(false)">Đăng nhập hệ thống</button>' : '<button class="btn btn-primary" onclick="App.navigate(\'dashboard\')">Quay lại Tổng quan</button>'}
       </div>
     `;
   },
@@ -2157,6 +4255,9 @@ const App = {
     try {
       const bs = await API.getBootstrapStatus();
       if (bs.need_bootstrap) {
+        this.currentUser = null;
+        this.userPermissions = new Set();
+        this.updateUserUI();
         this.showAuthModal(true, bs.bootstrap_token_required);
         return;
       }
@@ -2172,6 +4273,7 @@ const App = {
       console.warn("Chưa đăng nhập:", err.message);
       this.currentUser = null;
       this.userPermissions = new Set();
+      this.updateUserUI();
       this.showAuthModal(false);
     }
   },
@@ -2202,10 +4304,30 @@ const App = {
   },
 
   updateUserUI() {
-    if (!this.currentUser) return;
     const nameElem = document.getElementById('user-display-name');
     const roleElem = document.getElementById('user-role-badge');
     const initialsElem = document.getElementById('user-avatar-initials');
+    const badgeContainer = document.getElementById('topbar-user-badge');
+
+    if (!this.currentUser) {
+      if (nameElem) nameElem.textContent = 'Chưa đăng nhập';
+      if (roleElem) {
+        roleElem.innerHTML = '<span class="badge badge-gray" style="font-size: 0.65rem; padding: 1px 5px; cursor: pointer;" title="Nhấn để đăng nhập">Chưa đăng nhập</span>';
+      }
+      if (initialsElem) initialsElem.textContent = '--';
+      if (badgeContainer) {
+        badgeContainer.style.cursor = 'pointer';
+        badgeContainer.title = 'Nhấn để đăng nhập vào hệ thống';
+        badgeContainer.onclick = () => this.showAuthModal(false);
+      }
+      return;
+    }
+
+    if (badgeContainer) {
+      badgeContainer.style.cursor = 'default';
+      badgeContainer.title = '';
+      badgeContainer.onclick = null;
+    }
 
     if (nameElem) nameElem.textContent = this.currentUser.full_name;
     if (roleElem) {
@@ -2312,6 +4434,7 @@ const App = {
     API.setToken('');
     this.currentUser = null;
     this.userPermissions = new Set();
+    this.updateUserUI();
     this.toast('Đã đăng xuất khỏi hệ thống', 'info');
     this.showAuthModal(false);
   },
@@ -2839,18 +4962,7 @@ const App = {
       'USER_UNLOCK': { label: 'Mở khóa tài khoản', badgeClass: 'badge-green', markerClass: 'marker-success' },
       'USER_RESET_PASSWORD': { label: 'Đặt lại mật khẩu', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
       'USER_PASSWORD_CHANGE': { label: 'Đổi mật khẩu', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
-      'USER_REVOKE_SESSIONS': { label: 'Thu hồi phiên đăng nhập', badgeClass: 'badge-amber', markerClass: 'marker-warning' },
-      'ORDER_CANCEL': { label: 'Hủy đơn hàng', badgeClass: 'badge-red', markerClass: 'marker-danger' },
-      'ORDER_COMPLETE': { label: 'Hoàn tất đơn hàng', badgeClass: 'badge-green', markerClass: 'marker-success' },
-      'ORDER_DUPLICATE': { label: 'Nhân bản đơn hàng', badgeClass: 'badge-blue', markerClass: 'marker-info' },
-      'ORDER_UPDATE': { label: 'Cập nhật đơn hàng', badgeClass: 'badge-tag', markerClass: 'marker-info' },
-      'PRODUCT_UNIT_CREATE': { label: 'Thêm đơn vị quy đổi', badgeClass: 'badge-blue', markerClass: 'marker-info' },
-      'PRODUCT_UNIT_UPDATE': { label: 'Sửa đơn vị quy đổi', badgeClass: 'badge-tag', markerClass: 'marker-info' },
-      'PRODUCT_UNIT_DELETE': { label: 'Xóa đơn vị quy đổi', badgeClass: 'badge-red', markerClass: 'marker-danger' },
-      'PROMOTION_CREATE': { label: 'Tạo khuyến mãi', badgeClass: 'badge-purple', markerClass: 'marker-purple' },
-      'PROMOTION_UPDATE': { label: 'Sửa khuyến mãi', badgeClass: 'badge-tag', markerClass: 'marker-purple' },
-      'PROMOTION_DELETE': { label: 'Xóa khuyến mãi', badgeClass: 'badge-red', markerClass: 'marker-danger' },
-      'EXCEL_EXPORT': { label: 'Xuất file Excel', badgeClass: 'badge-tag', markerClass: 'marker-info' }
+      'USER_REVOKE_SESSIONS': { label: 'Thu hồi phiên đăng nhập', badgeClass: 'badge-amber', markerClass: 'marker-warning' }
     };
     return map[action] || { label: action, badgeClass: 'badge-tag', markerClass: 'marker-info' };
   },
@@ -2884,13 +4996,7 @@ const App = {
       'message': 'Thông tin',
       'username': 'Tên đăng nhập',
       'full_name': 'Họ và tên',
-      'role': 'Vai trò',
-      'unit_name': 'Đơn vị tính',
-      'conversion_rate': 'Tỷ lệ quy đổi',
-      'promo_code': 'Mã khuyến mãi',
-      'discount_value': 'Giá trị giảm',
-      'cancel_reason': 'Lý do hủy đơn',
-      'stock_breakdown': 'Quy đổi tồn'
+      'role': 'Vai trò'
     };
     return map[key] || key;
   },
@@ -2908,1101 +5014,22 @@ const App = {
       return pm[val] || val;
     }
     return val;
-  },
-
-  // ==========================================
-  // COLUMN SELECTOR & LOCAL STORAGE PERSISTENCE
-  // ==========================================
-  COLUMN_DEFS: {
-    'orders': [
-      { key: 'code', label: 'Mã đơn hàng' },
-      { key: 'created_at', label: 'Thời gian' },
-      { key: 'customer_name', label: 'Khách hàng' },
-      { key: 'status', label: 'Trạng thái' },
-      { key: 'items_summary', label: 'Mặt hàng' },
-      { key: 'total_amount', label: 'Tổng tiền' },
-      { key: 'discount', label: 'Giảm giá / KM' },
-      { key: 'final_amount', label: 'Khách cần trả' },
-      { key: 'actual_paid', label: 'Đã thanh toán' },
-      { key: 'debt_amount', label: 'Ghi nợ' },
-      { key: 'payment_method', label: 'Hình thức TT' },
-      { key: 'notes', label: 'Ghi chú' }
-    ],
-    'products': [
-      { key: 'code', label: 'Mã SP / SKU' },
-      { key: 'barcode', label: 'Mã vạch' },
-      { key: 'name', label: 'Tên hàng hóa' },
-      { key: 'category', label: 'Danh mục' },
-      { key: 'unit', label: 'Đơn vị tính' },
-      { key: 'stock', label: 'Tồn kho' },
-      { key: 'cost_price', label: 'Giá vốn (MAC)' },
-      { key: 'sale_price', label: 'Giá bán' }
-    ],
-    'customers': [
-      { key: 'code', label: 'Mã KH' },
-      { key: 'name', label: 'Tên khách hàng' },
-      { key: 'phone', label: 'Số điện thoại' },
-      { key: 'group_name', label: 'Nhóm khách' },
-      { key: 'total_spent', label: 'Tổng chi tiêu' },
-      { key: 'debt', label: 'Công nợ hiện tại' },
-      { key: 'address', label: 'Địa chỉ' }
-    ],
-    'suppliers': [
-      { key: 'code', label: 'Mã NCC' },
-      { key: 'name', label: 'Tên nhà cung cấp' },
-      { key: 'phone', label: 'Số điện thoại' },
-      { key: 'debt', label: 'Công nợ cần trả' },
-      { key: 'address', label: 'Địa chỉ' }
-    ],
-    'purchases': [
-      { key: 'code', label: 'Mã phiếu nhập' },
-      { key: 'created_at', label: 'Ngày nhập' },
-      { key: 'supplier_name', label: 'Nhà cung cấp' },
-      { key: 'total_amount', label: 'Tổng tiền' },
-      { key: 'paid_amount', label: 'Đã trả' },
-      { key: 'debt_amount', label: 'Còn nợ' },
-      { key: 'status', label: 'Trạng thái' }
-    ],
-    'returns': [
-      { key: 'code', label: 'Mã phiếu trả' },
-      { key: 'created_at', label: 'Ngày trả' },
-      { key: 'order_code', label: 'Hóa đơn gốc' },
-      { key: 'customer_name', label: 'Khách hàng' },
-      { key: 'total_refund', label: 'Tổng tiền trả' },
-      { key: 'reason', label: 'Lý do' }
-    ],
-    'cash-flow': [
-      { key: 'code', label: 'Mã phiếu' },
-      { key: 'created_at', label: 'Thời gian' },
-      { key: 'type', label: 'Loại phiếu (Thu/Chi)' },
-      { key: 'category', label: 'Hạng mục' },
-      { key: 'amount', label: 'Số tiền' },
-      { key: 'fund_type', label: 'Hình thức quỹ' },
-      { key: 'notes', label: 'Diễn giải' }
-    ]
-  },
-
-  getSavedColumns(viewName) {
-    try {
-      const saved = localStorage.getItem('kiotpro_cols_' + viewName);
-      if (saved) {
-        const arr = JSON.parse(saved);
-        if (Array.isArray(arr) && arr.length > 0) return arr;
-      }
-    } catch (e) {}
-    const defs = this.COLUMN_DEFS[viewName];
-    return defs ? defs.map(d => d.key) : [];
-  },
-
-  openColumnSelector(viewName) {
-    this.currentColumnSelectorView = viewName;
-    const defs = this.COLUMN_DEFS[viewName] || [];
-    const saved = this.getSavedColumns(viewName);
-    const container = document.getElementById('cs-checkboxes-container');
-    const title = document.getElementById('cs-title');
-    if (!container) return;
-
-    if (title) title.textContent = `Tùy chỉnh cột: ${viewName}`;
-
-    container.innerHTML = defs.map(col => `
-      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--color-border); background: var(--color-bg-alt);">
-        <input type="checkbox" value="${col.key}" ${saved.includes(col.key) ? 'checked' : ''} class="cs-col-chk">
-        <span style="font-weight: 500; font-size: 0.84rem;">${col.label}</span>
-      </label>
-    `).join('');
-
-    const modal = document.getElementById('modal-column-selector');
-    if (modal) modal.classList.add('active');
-  },
-
-  selectAllColumns(checked) {
-    document.querySelectorAll('.cs-col-chk').forEach(chk => chk.checked = checked);
-  },
-
-  saveColumnSelection() {
-    if (!this.currentColumnSelectorView) return;
-    const chks = document.querySelectorAll('.cs-col-chk:checked');
-    const keys = Array.from(chks).map(c => c.value);
-    if (keys.length === 0) {
-      this.toast('Vui lòng chọn ít nhất 1 cột hiển thị', 'warning');
-      return;
-    }
-    localStorage.setItem('kiotpro_cols_' + this.currentColumnSelectorView, JSON.stringify(keys));
-    const modal = document.getElementById('modal-column-selector');
-    if (modal) modal.classList.remove('active');
-    this.toast('Đã lưu cấu hình cột hiển thị!', 'success');
-    this.refreshCurrentView();
-  },
-
-  // ==========================================
-  // EXCEL EXPORT DISPATCHER
-  // ==========================================
-  exportExcel(entity) {
-    const params = {};
-    if (entity === 'orders') {
-      const q = document.getElementById('order-filter-q')?.value;
-      const status = document.getElementById('order-filter-status')?.value;
-      const payment = document.getElementById('order-filter-payment')?.value;
-      const from = document.getElementById('order-filter-from')?.value;
-      const to = document.getElementById('order-filter-to')?.value;
-      if (q) params.q = q;
-      if (status) params.status = status;
-      if (payment) params.payment_method = payment;
-      if (from) params.date_from = from;
-      if (to) params.date_to = to;
-    } else if (entity === 'products') {
-      const q = document.getElementById('prod-search-input')?.value;
-      const cat = document.getElementById('prod-cat-filter')?.value;
-      const lowStock = document.getElementById('prod-low-stock-filter')?.checked;
-      if (q) params.q = q;
-      if (cat) params.category = cat;
-      if (lowStock) params.low_stock = '1';
-    } else if (entity === 'customers') {
-      const q = document.getElementById('cust-search-input')?.value;
-      if (q) params.q = q;
-    } else if (entity === 'suppliers') {
-      const q = document.getElementById('supp-search-input')?.value;
-      if (q) params.q = q;
-    } else if (entity === 'purchases') {
-      const supp = document.getElementById('purchase-supplier-filter')?.value;
-      const from = document.getElementById('purchase-filter-from')?.value;
-      const to = document.getElementById('purchase-filter-to')?.value;
-      if (supp) params.supplier_id = supp;
-      if (from) params.date_from = from;
-      if (to) params.date_to = to;
-    } else if (entity === 'returns') {
-      const from = document.getElementById('return-filter-from')?.value;
-      const to = document.getElementById('return-filter-to')?.value;
-      if (from) params.date_from = from;
-      if (to) params.date_to = to;
-    } else if (entity === 'cash-flow') {
-      const type = document.getElementById('cf-type-filter')?.value;
-      const from = document.getElementById('cf-filter-from')?.value;
-      const to = document.getElementById('cf-filter-to')?.value;
-      if (type && type !== 'all') params.type = type === 'receipt' ? 'in' : 'out';
-      if (from) params.date_from = from;
-      if (to) params.date_to = to;
-    }
-
-    const savedCols = this.getSavedColumns(entity);
-    if (savedCols && savedCols.length > 0) {
-      params.columns = savedCols.join(',');
-    }
-
-    this.toast(`Đang tạo và tải tệp Excel ${entity}.xlsx...`, 'info');
-    API.downloadExport(entity, params);
-  },
-
-  // ==========================================
-  // ORDERS MANAGEMENT VIEW
-  // ==========================================
-  async renderOrdersView() {
-    const container = document.getElementById('view-orders');
-    if (!container) return;
-
-    container.innerHTML = `
-      <div id="orders-summary-cards" class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-bottom: 16px;">
-        <!-- Summary cards populated dynamically -->
-      </div>
-
-      <div class="card">
-        <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
-          <div style="display: flex; gap: 8px; align-items: center; flex: 1; flex-wrap: wrap;">
-            <input type="text" id="order-filter-q" class="form-control" style="max-width: 240px;" placeholder="Tìm theo mã đơn, khách, SĐT...">
-            <select id="order-filter-status" class="form-control" style="max-width: 150px;">
-              <option value="">Tất cả trạng thái</option>
-              <option value="completed">Đã hoàn tất</option>
-              <option value="pending">Đang chờ</option>
-              <option value="cancelled">Đã hủy</option>
-            </select>
-            <select id="order-filter-payment" class="form-control" style="max-width: 150px;">
-              <option value="">Tất cả hình thức</option>
-              <option value="cash">Tiền mặt</option>
-              <option value="bank">Chuyển khoản</option>
-              <option value="debt">Ghi nợ</option>
-            </select>
-            <div style="display: flex; align-items: center; gap: 4px;">
-              <input type="date" id="order-filter-from" class="form-control" style="max-width: 135px;" title="Từ ngày">
-              <span>-</span>
-              <input type="date" id="order-filter-to" class="form-control" style="max-width: 135px;" title="Đến ngày">
-            </div>
-            <button class="btn btn-primary btn-sm" onclick="App.filterOrders(1)">Lọc</button>
-            <button class="btn btn-outline btn-sm" onclick="App.resetOrderFilters()">Đặt lại</button>
-          </div>
-          <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline btn-sm" onclick="App.openColumnSelector('orders')">Chọn cột</button>
-            <button class="btn btn-outline btn-sm" onclick="App.exportExcel('orders')">Xuất Excel</button>
-            <button class="btn btn-primary btn-sm" onclick="App.navigate('pos')">+ Bán hàng (POS)</button>
-          </div>
-        </div>
-
-        <div class="card-body" style="padding: 0;">
-          <div class="table-responsive">
-            <table class="table">
-              <thead id="orders-table-head">
-                <!-- Dynamically configured headers -->
-              </thead>
-              <tbody id="orders-table-body">
-                <tr><td colspan="10" class="empty-state">Đang tải danh sách đơn bán hàng...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card-footer" id="orders-pagination" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 0.8125rem;">
-          <!-- Pagination populated dynamically -->
-        </div>
-      </div>
-    `;
-
-    document.getElementById('order-filter-q')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.filterOrders(1);
-    });
-
-    this.filterOrders(1);
-  },
-
-  async filterOrders(page = 1) {
-    this.ordersPage = page;
-    const tbody = document.getElementById('orders-table-body');
-    const thead = document.getElementById('orders-table-head');
-    const summaryContainer = document.getElementById('orders-summary-cards');
-    const pagination = document.getElementById('orders-pagination');
-    if (!tbody) return;
-
-    tbody.innerHTML = `<tr><td colspan="10" class="empty-state">Đang tải dữ liệu...</td></tr>`;
-
-    const q = document.getElementById('order-filter-q')?.value.trim() || '';
-    const status = document.getElementById('order-filter-status')?.value || '';
-    const payment = document.getElementById('order-filter-payment')?.value || '';
-    const date_from = document.getElementById('order-filter-from')?.value || '';
-    const date_to = document.getElementById('order-filter-to')?.value || '';
-
-    const limit = this.ordersLimit || 15;
-    const offset = (page - 1) * limit;
-
-    const params = { limit, offset };
-    if (q) params.q = q;
-    if (status) params.status = status;
-    if (payment) params.payment_method = payment;
-    if (date_from) params.date_from = date_from;
-    if (date_to) params.date_to = date_to;
-
-    try {
-      const res = await API.getOrders(params);
-      const items = res.items || [];
-      const total = res.total || 0;
-      const summary = res.summary || {};
-
-      // Render summary cards
-      if (summaryContainer && summary.total_count !== undefined) {
-        summaryContainer.innerHTML = `
-          <div class="stat-card">
-            <div class="stat-title">Tổng đơn hàng</div>
-            <div class="stat-value">${summary.total_count.toLocaleString('vi-VN')}</div>
-            <div class="stat-sub">Tất cả giao dịch</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-title">Đã hoàn tất</div>
-            <div class="stat-value text-success">${summary.completed_count || 0}</div>
-            <div class="stat-sub">Doanh thu: <strong>${this.formatMoney(summary.completed_revenue || 0)}</strong></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-title">Đơn đang chờ</div>
-            <div class="stat-value text-amber">${summary.pending_count || 0}</div>
-            <div class="stat-sub">Tổng tiền: <strong>${this.formatMoney(summary.pending_amount || 0)}</strong></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-title">Đã hủy</div>
-            <div class="stat-value text-danger">${summary.cancelled_count || 0}</div>
-            <div class="stat-sub">Đã hoàn trả kho/quỹ</div>
-          </div>
-        `;
-      }
-
-      // Configure table headers
-      const visibleCols = this.getSavedColumns('orders');
-      const allCols = this.COLUMN_DEFS['orders'];
-      if (thead) {
-        thead.innerHTML = `
-          <tr>
-            ${allCols.filter(c => visibleCols.includes(c.key)).map(c => `<th>${c.label}</th>`).join('')}
-            <th class="text-right" style="min-width: 140px;">Thao tác</th>
-          </tr>
-        `;
-      }
-
-      if (items.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${visibleCols.length + 1}" class="empty-state">Không tìm thấy đơn hàng nào phù hợp với bộ lọc</td></tr>`;
-        if (pagination) pagination.innerHTML = `<div>Tổng cộng: <strong>0</strong> đơn hàng</div>`;
-        return;
-      }
-
-      tbody.innerHTML = items.map(o => {
-        let statusBadge = '';
-        if (o.status === 'completed') {
-          statusBadge = '<span class="order-badge-completed">Hoàn tất</span>';
-        } else if (o.status === 'pending') {
-          statusBadge = '<span class="order-badge-pending">Đang chờ</span>';
-        } else if (o.status === 'cancelled') {
-          statusBadge = '<span class="order-badge-cancelled">Đã hủy</span>';
-        } else {
-          statusBadge = `<span class="badge-tag">${o.status}</span>`;
-        }
-
-        const pmText = { 'cash': 'Tiền mặt', 'bank': 'Chuyển khoản', 'debt': 'Ghi nợ' }[o.payment_method] || o.payment_method;
-
-        const cells = [];
-        if (visibleCols.includes('code')) {
-          cells.push(`<td><strong style="color: var(--color-primary); cursor: pointer;" onclick="App.renderOrderDetail(${o.id})">${o.code}</strong></td>`);
-        }
-        if (visibleCols.includes('created_at')) {
-          cells.push(`<td style="font-size: 0.8125rem; white-space: nowrap; color: var(--color-text-secondary);">${o.created_at}</td>`);
-        }
-        if (visibleCols.includes('customer_name')) {
-          cells.push(`<td><strong>${o.customer_name || 'Khách lẻ'}</strong>${o.customer_phone ? `<br><small style="color: var(--color-text-muted);">${o.customer_phone}</small>` : ''}</td>`);
-        }
-        if (visibleCols.includes('status')) {
-          cells.push(`<td>${statusBadge}</td>`);
-        }
-        if (visibleCols.includes('items_summary')) {
-          const summaryStr = o.items ? o.items.map(it => `${it.product_name} (${it.quantity} ${it.unit_name || ''})`).join(', ') : '---';
-          cells.push(`<td style="font-size: 0.8125rem; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${summaryStr}">${summaryStr}</td>`);
-        }
-        if (visibleCols.includes('total_amount')) {
-          cells.push(`<td class="text-right tabular-nums">${this.formatMoney(o.total_amount)}</td>`);
-        }
-        if (visibleCols.includes('discount')) {
-          cells.push(`<td class="text-right tabular-nums text-amber">${this.formatMoney(o.discount)}</td>`);
-        }
-        if (visibleCols.includes('final_amount')) {
-          cells.push(`<td class="text-right tabular-nums font-bold" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</td>`);
-        }
-        if (visibleCols.includes('actual_paid')) {
-          cells.push(`<td class="text-right tabular-nums">${this.formatMoney(o.actual_paid)}</td>`);
-        }
-        if (visibleCols.includes('debt_amount')) {
-          cells.push(`<td class="text-right tabular-nums" style="color: ${o.debt_amount > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)'}; font-weight: ${o.debt_amount > 0 ? '700' : 'normal'};">${this.formatMoney(o.debt_amount)}</td>`);
-        }
-        if (visibleCols.includes('payment_method')) {
-          cells.push(`<td><span class="badge-tag">${pmText}</span></td>`);
-        }
-        if (visibleCols.includes('notes')) {
-          cells.push(`<td style="font-size: 0.8125rem; color: var(--color-text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${o.notes || ''}">${o.notes || '---'}</td>`);
-        }
-
-        const canCancel = o.status !== 'cancelled' && this.hasPermission('orders:cancel');
-        const isPending = o.status === 'pending';
-
-        const actionBtns = `
-          <div style="display: flex; gap: 4px; justify-content: flex-end;">
-            <button class="btn btn-sm btn-outline" onclick="App.renderOrderDetail(${o.id})" title="Xem chi tiết">Chi tiết</button>
-            <button class="btn btn-sm btn-outline" onclick="App.duplicateOrderToPos(${o.id})" title="Nhân bản / Tải vào POS">Nhân bản</button>
-            ${isPending ? `<button class="btn btn-sm btn-success" onclick="App.promptCompleteOrder(${o.id})" title="Hoàn tất đơn hàng">Hoàn tất</button>` : ''}
-            ${canCancel ? `<button class="btn btn-sm btn-danger" onclick="App.openCancelOrderModal(${o.id}, '${o.code}')" title="Hủy đơn hàng">Hủy</button>` : ''}
-          </div>
-        `;
-
-        return `<tr>${cells.join('')}<td class="text-right">${actionBtns}</td></tr>`;
-      }).join('');
-
-      // Render pagination
-      const totalPages = Math.ceil(total / limit) || 1;
-      if (pagination) {
-        pagination.innerHTML = `
-          <div>Hiển thị ${offset + 1} - ${Math.min(offset + limit, total)} trên tổng <strong>${total}</strong> đơn hàng</div>
-          <div style="display: flex; gap: 4px;">
-            <button class="btn btn-sm btn-outline" ${page <= 1 ? 'disabled' : ''} onclick="App.filterOrders(${page - 1})">Trước</button>
-            <span style="padding: 4px 8px; font-weight: 600;">Trang ${page} / ${totalPages}</span>
-            <button class="btn btn-sm btn-outline" ${page >= totalPages ? 'disabled' : ''} onclick="App.filterOrders(${page + 1})">Sau</button>
-          </div>
-        `;
-      }
-    } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="10" class="empty-state text-danger">Lỗi tải danh sách hóa đơn: ${err.message}</td></tr>`;
-    }
-  },
-
-  resetOrderFilters() {
-    const q = document.getElementById('order-filter-q');
-    const status = document.getElementById('order-filter-status');
-    const payment = document.getElementById('order-filter-payment');
-    const from = document.getElementById('order-filter-from');
-    const to = document.getElementById('order-filter-to');
-    if (q) q.value = '';
-    if (status) status.value = '';
-    if (payment) payment.value = '';
-    if (from) from.value = '';
-    if (to) to.value = '';
-    this.filterOrders(1);
-  },
-
-  async renderOrderDetail(orderId) {
-    const modal = document.getElementById('modal-order-detail');
-    const title = document.getElementById('od-title');
-    const subtitle = document.getElementById('od-subtitle');
-    const body = document.getElementById('od-body-content');
-    const footer = document.getElementById('od-footer-actions');
-    if (!modal || !body) return;
-
-    modal.classList.add('active');
-    body.innerHTML = '<div style="text-align: center; padding: 40px;">Đang tải chi tiết đơn hàng...</div>';
-
-    try {
-      const order = await API.getOrder(orderId);
-      if (!order) {
-        body.innerHTML = '<div class="text-danger">Không tìm thấy đơn hàng.</div>';
-        return;
-      }
-
-      let statusBadge = '';
-      if (order.status === 'completed') {
-        statusBadge = '<span class="order-badge-completed">Đã hoàn tất</span>';
-      } else if (order.status === 'pending') {
-        statusBadge = '<span class="order-badge-pending">Đơn hàng đang chờ</span>';
-      } else if (order.status === 'cancelled') {
-        statusBadge = '<span class="order-badge-cancelled">Đã hủy</span>';
-      }
-
-      if (title) title.innerHTML = `Chi tiết hóa đơn: <strong style="color: var(--color-primary);">${this.escapeHtml(order.code)}</strong> ${statusBadge}`;
-      if (subtitle) subtitle.textContent = `Ngày tạo: ${order.created_at} | Nhân viên: ${order.user_name || 'Hệ thống'}`;
-
-      const pmMap = { 'cash': 'Tiền mặt', 'bank': 'Chuyển khoản', 'debt': 'Ghi nợ' };
-      const pmLabel = pmMap[order.payment_method] || order.payment_method;
-
-      const itemsHtml = (order.items || []).map((it, idx) => `
-        <tr>
-          <td>${idx + 1}</td>
-          <td>
-            <strong>${this.escapeHtml(it.product_name)}</strong>
-            ${it.conversion_rate && it.conversion_rate > 1 ? `<br><small style="color: var(--color-text-muted);">Quy đổi: 1 ${this.escapeHtml(it.unit_name)} = ${it.conversion_rate} đv cơ sở</small>` : ''}
-          </td>
-          <td><span class="unit-tag-pill">${this.escapeHtml(it.unit_name || 'Cái')}</span></td>
-          <td class="text-right font-bold">${it.quantity}</td>
-          <td class="text-right tabular-nums">${this.formatMoney(it.unit_price)}</td>
-          <td class="text-right tabular-nums font-bold">${this.formatMoney(it.total_price)}</td>
-        </tr>
-      `).join('');
-
-      body.innerHTML = `
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; background: var(--color-bg-alt); padding: 12px 16px; border-radius: 6px; font-size: 0.84rem;">
-          <div>
-            <div><strong>Khách hàng:</strong> ${this.escapeHtml(order.customer_name || 'Khách lẻ')}</div>
-            <div><strong>Số điện thoại:</strong> ${this.escapeHtml(order.customer_phone || '---')}</div>
-            <div><strong>Địa chỉ:</strong> ${this.escapeHtml(order.customer_address || '---')}</div>
-          </div>
-          <div>
-            <div><strong>Hình thức thanh toán:</strong> <span class="badge-tag">${this.escapeHtml(pmLabel)}</span></div>
-            <div><strong>Trạng thái:</strong> ${statusBadge}</div>
-            <div><strong>Ghi chú:</strong> <em style="color: var(--color-text-secondary);">${this.escapeHtml(order.notes || 'Không có ghi chú')}</em></div>
-          </div>
-        </div>
-
-        ${order.status === 'cancelled' ? `
-          <div class="alert alert-warning" style="margin-bottom: 16px; font-size: 0.84rem;">
-            <strong>Đơn hàng đã bị hủy</strong> lúc <em>${this.escapeHtml(order.cancelled_at || '')}</em>.<br>
-            <strong>Lý do:</strong> ${this.escapeHtml(order.cancel_reason || 'Không rõ lý do')}.<br>
-            Toàn bộ tồn kho, quỹ tiền và công nợ liên quan đã được tự động hoàn trả an toàn.
-          </div>
-        ` : ''}
-
-        ${order.status === 'pending' ? `
-          <div class="alert alert-info" style="margin-bottom: 16px; font-size: 0.84rem;">
-            <strong>Đơn hàng đang chờ xử lý.</strong> Tồn kho chưa bị trừ và doanh thu/công nợ chưa được ghi nhận vào sổ sách chính thức.
-          </div>
-        ` : ''}
-
-        <div class="table-responsive" style="margin-bottom: 16px;">
-          <table class="table" style="font-size: 0.84rem;">
-            <thead>
-              <tr>
-                <th style="width: 40px;">STT</th>
-                <th>Sản phẩm / Hàng hóa</th>
-                <th>Đơn vị tính</th>
-                <th class="text-right">Số lượng</th>
-                <th class="text-right">Đơn giá</th>
-                <th class="text-right">Thành tiền</th>
-              </tr>
-            </thead>
-            <tbody>${itemsHtml}</tbody>
-          </table>
-        </div>
-
-        <div style="display: flex; justify-content: flex-end;">
-          <div style="min-width: 280px; font-size: 0.875rem; line-height: 1.8;">
-            <div style="display: flex; justify-content: space-between;">
-              <span>Tổng tiền hàng:</span>
-              <span class="tabular-nums font-bold">${this.formatMoney(order.total_amount)}</span>
-            </div>
-            ${order.discount > 0 ? `
-              <div style="display: flex; justify-content: space-between; color: var(--color-warning-text);">
-                <span>Giảm giá / Khuyến mãi ${order.promotion_code ? `(${order.promotion_code})` : ''}:</span>
-                <span class="tabular-nums font-bold">-${this.formatMoney(order.discount)}</span>
-              </div>
-            ` : ''}
-            ${order.vat_amount > 0 ? `
-              <div style="display: flex; justify-content: space-between;">
-                <span>Thuế VAT:</span>
-                <span class="tabular-nums">${this.formatMoney(order.vat_amount)}</span>
-              </div>
-            ` : ''}
-            <div style="display: flex; justify-content: space-between; border-top: 1px dashed var(--color-border); padding-top: 4px; font-size: 1rem; color: var(--color-primary);">
-              <strong>Khách cần trả:</strong>
-              <strong class="tabular-nums">${this.formatMoney(order.final_amount)}</strong>
-            </div>
-            <div style="display: flex; justify-content: space-between;">
-              <span>Khách đã trả:</span>
-              <span class="tabular-nums font-bold">${this.formatMoney(order.actual_paid)}</span>
-            </div>
-            ${order.change_amount > 0 ? `
-              <div style="display: flex; justify-content: space-between; color: var(--color-success-text);">
-                <span>Tiền thừa trả khách:</span>
-                <span class="tabular-nums">${this.formatMoney(order.change_amount)}</span>
-              </div>
-            ` : ''}
-            ${order.debt_amount > 0 ? `
-              <div style="display: flex; justify-content: space-between; color: var(--color-danger-text);">
-                <strong>Ghi nợ đơn hàng:</strong>
-                <strong class="tabular-nums">${this.formatMoney(order.debt_amount)}</strong>
-              </div>
-            ` : ''}
-          </div>
-        </div>
-      `;
-
-      if (footer) {
-        footer.innerHTML = `
-          <div style="display: flex; gap: 8px; justify-content: space-between; width: 100%;">
-            <div style="display: flex; gap: 8px;">
-              <button class="btn btn-outline" onclick="App.viewEntityTimeline('order', '${order.code}')">Xem Timeline</button>
-              <button class="btn btn-outline" onclick="App.duplicateOrderToPos(${order.id})">Nhân bản đơn</button>
-              <button class="btn btn-outline" onclick="POS.reprintReceipt(${JSON.stringify(order).replace(/"/g, '&quot;')})">In hóa đơn</button>
-            </div>
-            <div style="display: flex; gap: 8px;">
-              ${isPending ? `<button class="btn btn-success" onclick="App.promptCompleteOrder(${order.id})">Hoàn tất đơn hàng</button>` : ''}
-              ${canCancel ? `<button class="btn btn-danger" onclick="App.openCancelOrderModal(${order.id}, '${order.code}')">Hủy đơn</button>` : ''}
-              <button class="btn btn-outline" data-close-modal="modal-order-detail">Đóng</button>
-            </div>
-          </div>
-        `;
-      }
-    } catch (err) {
-      body.innerHTML = `<div class="text-danger">Lỗi tải chi tiết đơn hàng: ${err.message}</div>`;
-    }
-  },
-
-  openCancelOrderModal(orderId, orderCode) {
-    document.getElementById('cancel-order-code').textContent = orderCode;
-    document.getElementById('cancel-order-code').dataset.orderId = orderId;
-    const reasonElem = document.getElementById('cancel-order-reason');
-    if (reasonElem) reasonElem.value = '';
-    const modal = document.getElementById('modal-order-cancel');
-    if (modal) modal.classList.add('active');
-  },
-
-  async confirmCancelOrder() {
-    const codeElem = document.getElementById('cancel-order-code');
-    const orderId = codeElem?.dataset?.orderId;
-    const orderCode = codeElem?.textContent;
-    const reason = document.getElementById('cancel-order-reason')?.value.trim();
-
-    if (!reason) {
-      this.toast('Vui lòng nhập lý do hủy đơn hàng', 'warning');
-      return;
-    }
-
-    try {
-      await API.cancelOrder(orderId, { reason });
-      this.toast(`Đã hủy đơn hàng ${orderCode} thành công! Kho, tiền quỹ và công nợ đã được hoàn trả.`, 'success');
-      const modalCancel = document.getElementById('modal-order-cancel');
-      if (modalCancel) modalCancel.classList.remove('active');
-      const modalDetail = document.getElementById('modal-order-detail');
-      if (modalDetail) modalDetail.classList.remove('active');
-      this.refreshCurrentView();
-      this.loadTopFundSummary();
-    } catch (err) {
-      this.toast('Lỗi hủy đơn hàng: ' + err.message, 'error');
-    }
-  },
-
-  async promptCompleteOrder(orderId) {
-    if (!confirm('Xác nhận hoàn tất đơn hàng đang chờ này? Tồn kho sẽ được trừ và ghi nhận doanh thu.')) return;
-    try {
-      await API.completeOrder(orderId);
-      this.toast('Đơn hàng đã được chuyển sang trạng thái Hoàn tất!', 'success');
-      const modalDetail = document.getElementById('modal-order-detail');
-      if (modalDetail) modalDetail.classList.remove('active');
-      const modalPending = document.getElementById('modal-customer-pending');
-      if (modalPending) modalPending.classList.remove('active');
-      this.refreshCurrentView();
-      this.loadTopFundSummary();
-    } catch (err) {
-      this.toast('Lỗi hoàn tất đơn hàng: ' + err.message, 'error');
-    }
-  },
-
-  async duplicateOrderToPos(orderId) {
-    try {
-      const modalDetail = document.getElementById('modal-order-detail');
-      if (modalDetail) modalDetail.classList.remove('active');
-      const modalPending = document.getElementById('modal-customer-pending');
-      if (modalPending) modalPending.classList.remove('active');
-
-      this.navigate('pos');
-      await POS.loadFromOrder(orderId);
-      this.toast('Đã sao chép đơn hàng vào giỏ bán POS!', 'success');
-    } catch (err) {
-      this.toast('Lỗi sao chép đơn: ' + err.message, 'error');
-    }
-  },
-
-  // ==========================================
-  // PROMOTIONS MANAGEMENT VIEW
-  // ==========================================
-  async renderPromotionsView() {
-    const container = document.getElementById('view-promotions');
-    if (!container) return;
-
-    container.innerHTML = `
-      <div class="card">
-        <div class="card-header">
-          <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
-            <h4 style="margin: 0; font-size: 1rem; font-weight: 600;">Chương trình khuyến mãi & Chiết khấu</h4>
-          </div>
-          <div style="display: flex; gap: 8px;">
-            <button class="btn btn-outline" onclick="App.exportExcel('promotions')">Xuất Excel</button>
-            <button class="btn btn-primary" onclick="App.openCreatePromotionModal()">+ Tạo khuyến mãi mới</button>
-          </div>
-        </div>
-
-        <div class="card-body" style="padding: 0;">
-          <div class="table-responsive">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Mã KM</th>
-                  <th>Tên chương trình</th>
-                  <th>Phạm vi</th>
-                  <th>Đối tượng áp dụng</th>
-                  <th>Loại giảm</th>
-                  <th class="text-right">Giá trị</th>
-                  <th class="text-right">Đơn tối thiểu</th>
-                  <th>Thời gian áp dụng</th>
-                  <th class="text-center">Trạng thái</th>
-                  <th class="text-right">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody id="promotions-table-body">
-                <tr><td colspan="10" class="empty-state">Đang tải danh sách khuyến mãi...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    `;
-
-    this.loadPromotionsTable();
-  },
-
-  async loadPromotionsTable() {
-    const tbody = document.getElementById('promotions-table-body');
-    if (!tbody) return;
-
-    try {
-      const promos = await API.getPromotions();
-      if (promos.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="10" class="empty-state">Chưa có chương trình khuyến mãi nào được tạo.</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = promos.map(p => {
-        const scopeMap = { 'order': 'Toàn đơn hàng', 'category': 'Theo danh mục', 'product': 'Theo sản phẩm' };
-        const typeMap = { 'percent': 'Theo phần trăm (%)', 'fixed': 'Số tiền cố định' };
-        const valStr = p.discount_type === 'percent' ? `${p.discount_value}%` : this.formatMoney(p.discount_value);
-
-        return `
-          <tr>
-            <td><strong style="color: var(--color-primary);">${p.code}</strong></td>
-            <td><strong>${p.name}</strong></td>
-            <td><span class="badge-tag badge-blue">${scopeMap[p.scope] || p.scope}</span></td>
-            <td>${p.scope_target || 'Tất cả'}</td>
-            <td>${typeMap[p.discount_type] || p.discount_type}</td>
-            <td class="text-right font-bold tabular-nums" style="color: var(--color-primary);">${valStr}</td>
-            <td class="text-right tabular-nums">${this.formatMoney(p.min_order_amount)}</td>
-            <td style="font-size: 0.8125rem; white-space: nowrap;">${p.start_date} <br>đến ${p.end_date}</td>
-            <td class="text-center">
-              <span class="badge-tag ${p.is_active ? 'badge-green' : 'badge-red'}" style="cursor: pointer;" onclick="App.togglePromotionActive(${p.id}, ${!p.is_active})">
-                ${p.is_active ? 'Đang chạy' : 'Tạm dừng'}
-              </span>
-            </td>
-            <td class="text-right">
-              <button class="btn btn-sm btn-outline" onclick="App.openEditPromotionModal(${p.id})">Sửa</button>
-              <button class="btn btn-sm btn-danger" onclick="App.deletePromotion(${p.id}, '${p.name.replace(/'/g, "\\'")}')">Xóa</button>
-            </td>
-          </tr>
-        `;
-      }).join('');
-    } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="10" class="empty-state text-danger">Lỗi tải khuyến mãi: ${err.message}</td></tr>`;
-    }
-  },
-
-  async openCreatePromotionModal() {
-    const modal = document.getElementById('modal-promotion');
-    document.getElementById('promo-modal-title').textContent = 'Tạo chương trình khuyến mãi';
-    document.getElementById('promo-id').value = '';
-    document.getElementById('promo-name').value = '';
-    
-    // Default dates
-    const now = new Date();
-    const future = new Date(now.getTime() + 30 * 24 * 3600 * 1000);
-    document.getElementById('promo-start').value = now.toISOString().split('T')[0];
-    document.getElementById('promo-end').value = future.toISOString().split('T')[0];
-
-    document.getElementById('promo-scope').value = 'order';
-    document.getElementById('promo-type').value = 'percent';
-    document.getElementById('promo-value').value = '5';
-    document.getElementById('promo-min-amount').value = '0';
-    document.getElementById('promo-is-active').checked = true;
-
-    await this.onPromoScopeChange();
-    modal.classList.add('active');
-  },
-
-  async openEditPromotionModal(id) {
-    try {
-      const promo = await API.getPromotion(id);
-      if (!promo) return;
-
-      const modal = document.getElementById('modal-promotion');
-      document.getElementById('promo-modal-title').textContent = 'Chỉnh sửa khuyến mãi: ' + promo.name;
-      document.getElementById('promo-id').value = promo.id;
-      document.getElementById('promo-name').value = promo.name;
-      document.getElementById('promo-start').value = promo.start_date || '';
-      document.getElementById('promo-end').value = promo.end_date || '';
-      document.getElementById('promo-scope').value = promo.scope || 'order';
-      document.getElementById('promo-type').value = promo.discount_type || 'percent';
-      document.getElementById('promo-value').value = promo.discount_value || '0';
-      document.getElementById('promo-min-amount').value = promo.min_order_amount || '0';
-      document.getElementById('promo-customer-group').value = promo.customer_group || '';
-      document.getElementById('promo-is-active').checked = Boolean(promo.is_active);
-
-      await this.onPromoScopeChange(promo.scope_target);
-      modal.classList.add('active');
-    } catch (err) {
-      this.toast('Lỗi tải thông tin khuyến mãi: ' + err.message, 'error');
-    }
-  },
-
-  async onPromoScopeChange(currentTargetVal = '') {
-    const scope = document.getElementById('promo-scope')?.value || 'order';
-    const targetGrp = document.getElementById('promo-scope-target-grp');
-    const targetLbl = document.getElementById('promo-scope-target-lbl');
-    const targetContainer = document.getElementById('promo-scope-target-container');
-    if (!targetGrp || !targetContainer) return;
-
-    if (scope === 'order') {
-      targetGrp.style.display = 'none';
-      targetContainer.innerHTML = '';
-      return;
-    }
-
-    targetGrp.style.display = 'block';
-    if (scope === 'category') {
-      targetLbl.textContent = 'Danh mục áp dụng:';
-      try {
-        const cats = await API.getCategories();
-        targetContainer.innerHTML = `
-          <select id="promo-scope-target-select" class="form-control">
-            ${cats.map(c => `<option value="${c}" ${c === currentTargetVal ? 'selected' : ''}>${c}</option>`).join('')}
-          </select>
-        `;
-      } catch (e) {
-        targetContainer.innerHTML = '<input type="text" id="promo-scope-target-select" class="form-control" placeholder="Tên danh mục">';
-      }
-    } else if (scope === 'product') {
-      targetLbl.textContent = 'Sản phẩm áp dụng:';
-      try {
-        const prods = await API.getProducts();
-        targetContainer.innerHTML = `
-          <select id="promo-scope-target-select" class="form-control">
-            ${prods.map(p => `<option value="${p.id}" ${String(p.id) === String(currentTargetVal) ? 'selected' : ''}>${p.code} - ${p.name}</option>`).join('')}
-          </select>
-        `;
-      } catch (e) {
-        targetContainer.innerHTML = '<input type="text" id="promo-scope-target-select" class="form-control" placeholder="Mã hoặc ID sản phẩm">';
-      }
-    }
-  },
-
-  async savePromotion(e) {
-    if (e) e.preventDefault();
-    const id = document.getElementById('promo-id')?.value;
-    const name = document.getElementById('promo-name')?.value.trim();
-    const start_date = document.getElementById('promo-start')?.value;
-    const end_date = document.getElementById('promo-end')?.value;
-    const scope = document.getElementById('promo-scope')?.value;
-    const discount_type = document.getElementById('promo-type')?.value;
-    const discount_value = parseFloat(document.getElementById('promo-value')?.value || '0');
-    const min_order_amount = parseFloat(document.getElementById('promo-min-amount')?.value || '0');
-    const customer_group = document.getElementById('promo-customer-group')?.value || null;
-    const is_active = document.getElementById('promo-is-active')?.checked ? 1 : 0;
-
-    let scope_target = null;
-    if (scope !== 'order') {
-      scope_target = document.getElementById('promo-scope-target-select')?.value || null;
-    }
-
-    if (!name) {
-      this.toast('Vui lòng nhập tên chương trình khuyến mãi', 'warning');
-      return;
-    }
-    if (discount_value <= 0) {
-      this.toast('Giá trị giảm phải lớn hơn 0', 'warning');
-      return;
-    }
-    if (discount_type === 'percent' && discount_value > 100) {
-      this.toast('Chiết khấu phần trăm không được vượt quá 100%', 'warning');
-      return;
-    }
-
-    const payload = {
-      name,
-      start_date,
-      end_date,
-      scope,
-      scope_target,
-      discount_type,
-      discount_value,
-      min_order_amount,
-      customer_group,
-      is_active
-    };
-
-    try {
-      if (id) {
-        await API.updatePromotion(id, payload);
-        this.toast('Cập nhật khuyến mãi thành công!', 'success');
-      } else {
-        await API.createPromotion(payload);
-        this.toast('Tạo chương trình khuyến mãi thành công!', 'success');
-      }
-      const modal = document.getElementById('modal-promotion');
-      if (modal) modal.classList.remove('active');
-      this.loadPromotionsTable();
-    } catch (err) {
-      this.toast('Lỗi lưu khuyến mãi: ' + err.message, 'error');
-    }
-  },
-
-  async togglePromotionActive(id, newStatus) {
-    try {
-      await API.updatePromotion(id, { is_active: newStatus ? 1 : 0 });
-      this.toast(`Đã ${newStatus ? 'kích hoạt' : 'tạm dừng'} khuyến mãi!`, 'success');
-      this.loadPromotionsTable();
-    } catch (err) {
-      this.toast('Lỗi cập nhật: ' + err.message, 'error');
-    }
-  },
-
-  async deletePromotion(id, name) {
-    if (!confirm(`Xác nhận xóa chương trình khuyến mãi: "${name}"?`)) return;
-    try {
-      await API.deletePromotion(id);
-      this.toast('Đã xóa khuyến mãi thành công!', 'success');
-      this.loadPromotionsTable();
-    } catch (err) {
-      this.toast('Lỗi xóa khuyến mãi: ' + err.message, 'error');
-    }
-  },
-
-  // ==========================================
-  // MULTI-LEVEL PACKAGING UNITS MODAL
-  // ==========================================
-  async openProductUnitsModal(productId) {
-    const modal = document.getElementById('modal-product-units');
-    const title = document.getElementById('pu-modal-title');
-    const subtitle = document.getElementById('pu-modal-subtitle');
-    const tbody = document.getElementById('pu-table-body');
-    const hiddenPid = document.getElementById('pu-product-id');
-    const hiddenUid = document.getElementById('pu-unit-id');
-    const formTitle = document.getElementById('pu-form-title');
-
-    if (!modal) return;
-    hiddenPid.value = productId;
-    hiddenUid.value = '';
-    formTitle.textContent = 'Thêm đơn vị đóng gói mới';
-
-    // Clear form inputs
-    document.getElementById('pu-name').value = '';
-    document.getElementById('pu-rate').value = '';
-    document.getElementById('pu-price').value = '';
-    document.getElementById('pu-barcode').value = '';
-
-    modal.classList.add('active');
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Đang tải danh sách đơn vị quy đổi...</td></tr>';
-
-    try {
-      const units = await API.getProductUnits(productId);
-      const baseUnit = units.find(u => u.is_base);
-      const baseUnitName = baseUnit ? baseUnit.name : 'đv cơ sở';
-
-      if (subtitle) {
-        subtitle.textContent = `Đơn vị cơ sở: [${baseUnitName}] | Quy đổi các cấp đóng gói/bán buôn lớn hơn`;
-      }
-
-      tbody.innerHTML = units.map(u => {
-        const isBase = Boolean(u.is_base);
-        return `
-          <tr>
-            <td><strong>${u.name}</strong></td>
-            <td>
-              ${isBase ? `<span class="badge-tag badge-purple">1 (Đơn vị cơ sở)</span>` : `1 ${u.name} = <strong>${u.conversion_rate}</strong> ${baseUnitName}`}
-            </td>
-            <td class="text-right tabular-nums">
-              ${u.sale_price !== null && u.sale_price !== undefined ? this.formatMoney(u.sale_price) : '<span style="color: var(--color-text-muted); font-size: 0.8rem;">Tự động tính theo tỷ lệ</span>'}
-            </td>
-            <td style="font-family: var(--font-mono); font-size: 0.8125rem;">${u.barcode || '---'}</td>
-            <td>
-              <span class="badge-tag ${isBase ? 'badge-purple' : 'badge-blue'}">${isBase ? 'Cơ sở' : 'Đóng gói'}</span>
-            </td>
-            <td class="text-right">
-              ${isBase ? '<span style="color: var(--color-text-disabled); font-size: 0.8rem;">Mặc định</span>' : `
-                <button class="btn btn-sm btn-outline" onclick="App.editProductUnitRow(${JSON.stringify(u).replace(/"/g, '&quot;')})">Sửa</button>
-                <button class="btn btn-sm btn-danger" onclick="App.deleteProductUnit(${u.id}, ${productId})">Xóa</button>
-              `}
-            </td>
-          </tr>
-        `;
-      }).join('');
-    } catch (err) {
-      tbody.innerHTML = `<tr><td colspan="6" class="empty-state text-danger">Lỗi tải đơn vị tính: ${err.message}</td></tr>`;
-    }
-  },
-
-  editProductUnitRow(u) {
-    document.getElementById('pu-unit-id').value = u.id;
-    document.getElementById('pu-form-title').textContent = 'Chỉnh sửa đơn vị: ' + u.name;
-    document.getElementById('pu-name').value = u.name;
-    document.getElementById('pu-rate').value = u.conversion_rate;
-    document.getElementById('pu-price').value = u.sale_price !== null && u.sale_price !== undefined ? u.sale_price : '';
-    document.getElementById('pu-barcode').value = u.barcode || '';
-  },
-
-  async saveProductUnit(e) {
-    if (e) e.preventDefault();
-    const productId = document.getElementById('pu-product-id').value;
-    const unitId = document.getElementById('pu-unit-id').value;
-    const name = document.getElementById('pu-name').value.trim();
-    const rate = parseFloat(document.getElementById('pu-rate').value);
-    const priceInput = document.getElementById('pu-price').value.trim();
-    const sale_price = priceInput !== '' ? parseFloat(priceInput) : null;
-    const barcode = document.getElementById('pu-barcode').value.trim() || null;
-
-    if (!name) {
-      this.toast('Vui lòng nhập tên đơn vị tính', 'warning');
-      return;
-    }
-    if (isNaN(rate) || rate <= 0) {
-      this.toast('Hệ số quy đổi phải lớn hơn 0', 'warning');
-      return;
-    }
-
-    const payload = {
-      name,
-      conversion_rate: rate,
-      sale_price,
-      barcode
-    };
-
-    try {
-      if (unitId) {
-        await API.updateProductUnit(unitId, payload);
-        this.toast('Đã cập nhật đơn vị quy đổi!', 'success');
-      } else {
-        await API.saveProductUnit(productId, payload);
-        this.toast('Đã thêm đơn vị quy đổi mới!', 'success');
-      }
-      this.openProductUnitsModal(productId);
-      this.loadProductsTable();
-    } catch (err) {
-      this.toast('Lỗi lưu đơn vị tính: ' + err.message, 'error');
-    }
-  },
-
-  async deleteProductUnit(unitId, productId) {
-    if (!confirm('Xác nhận xóa đơn vị quy đổi này?')) return;
-    try {
-      await API.deleteProductUnit(unitId);
-      this.toast('Đã xóa đơn vị quy đổi thành công!', 'success');
-      this.openProductUnitsModal(productId);
-      this.loadProductsTable();
-    } catch (err) {
-      this.toast('Lỗi xóa đơn vị: ' + err.message, 'error');
-    }
-  },
-
-  // ==========================================
-  // CUSTOMER PENDING ORDERS MODAL
-  // ==========================================
-  async viewCustomerPendingOrders(customerId, customerName) {
-    const modal = document.getElementById('modal-customer-pending');
-    const title = document.getElementById('cust-pending-title');
-    const subtitle = document.getElementById('cust-pending-subtitle');
-    const container = document.getElementById('cust-pending-list-container');
-    if (!modal || !container) return;
-
-    if (title) title.textContent = `Đơn hàng đang chờ: ${customerName}`;
-    if (subtitle) subtitle.textContent = 'Danh sách các đơn đặt hàng chưa hoàn tất hoặc giao dịch chưa chốt';
-    container.innerHTML = '<div style="text-align: center; padding: 30px;">Đang tải đơn đặt hàng...</div>';
-    modal.classList.add('active');
-
-    try {
-      const orders = await API.getCustomerPendingOrders(customerId);
-      if (orders.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state" style="padding: 40px 10px;">
-            <div style="font-weight: 600; margin-bottom: 4px;">Khách hàng hiện không có đơn hàng nào đang chờ</div>
-            <div style="font-size: 0.8125rem; color: var(--color-text-muted);">Tất cả các đơn đã được hoàn tất hoặc đã hủy</div>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = orders.map(o => {
-        const itemsStr = o.items ? o.items.map(it => `${it.product_name} (${it.quantity} ${it.unit_name || ''})`).join(', ') : '---';
-        return `
-          <div style="background: var(--color-bg-alt); border: 1px solid var(--color-border); border-radius: 8px; padding: 14px; margin-bottom: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <div>
-                <strong style="color: var(--color-primary); font-size: 0.95rem;">${o.code}</strong>
-                <span style="font-size: 0.8125rem; color: var(--color-text-muted); margin-left: 8px;">${o.created_at}</span>
-              </div>
-              <span class="order-badge-pending">Đang chờ</span>
-            </div>
-            <div style="font-size: 0.84rem; margin-bottom: 6px;">
-              <strong>Mặt hàng:</strong> ${itemsStr}
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.875rem;">
-              <div>
-                Tổng tiền: <strong class="tabular-nums" style="color: var(--color-primary);">${this.formatMoney(o.final_amount)}</strong>
-                ${o.notes ? `<span style="font-size: 0.8125rem; color: var(--color-text-muted); margin-left: 10px;">(Ghi chú: ${o.notes})</span>` : ''}
-              </div>
-              <div style="display: flex; gap: 6px;">
-                <button class="btn btn-sm btn-outline" onclick="App.renderOrderDetail(${o.id})">Chi tiết</button>
-                <button class="btn btn-sm btn-outline" onclick="App.duplicateOrderToPos(${o.id})">Tải vào POS</button>
-                <button class="btn btn-sm btn-success" onclick="App.promptCompleteOrder(${o.id})">Hoàn tất</button>
-                <button class="btn btn-sm btn-danger" onclick="App.openCancelOrderModal(${o.id}, '${o.code}')">Hủy</button>
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('');
-    } catch (err) {
-      container.innerHTML = `<div class="text-danger" style="padding: 20px;">Lỗi tải đơn hàng: ${err.message}</div>`;
-    }
   }
 };
+
+window.App = App;
+window.openProductModal = (id) => App.openProductModal(id);
+window.editProduct = (id) => App.editProduct(id);
+window.openEditProductModal = (id) => App.openEditProductModal(id);
+window.openCreateProductModal = () => App.openCreateProductModal();
+window.submitCustomerDebtPayment = () => App.submitCustomerDebtPayment();
+window.submitCollectDebt = () => App.submitCollectDebt();
+window.openPayCustomerDebtModal = (id, name, debt) => App.openPayCustomerDebtModal(id, name, debt);
+window.loadCashFlowTable = () => App.loadCashFlowTable();
+window.loadCashFlowData = () => App.loadCashFlowData();
+window.openCreateCashFlowModal = (type) => App.openCreateCashFlowModal(type);
+window.saveCashFlowVoucher = () => App.saveCashFlowVoucher();
+window.exportCashFlowExcel = () => App.exportCashFlowExcel();
 
 document.addEventListener('DOMContentLoaded', () => {
   App.init();

@@ -1,29 +1,31 @@
 """
-Comprehensive Automated Test Suite for KiotPro v3 Features:
-1. Multi-level packaging units & conversions (product_units, base unit, rate > 0, stock breakdown, decimal quantity).
-2. Unit-based POS selling & customer-specific pricing compatibility.
-3. Order Management & lifecycle (pending, completed, cancelled, duplication, search/filter, pagination).
-4. Customer pending totals and modal endpoints.
-5. Safe Order Cancellation (inventory stock, debt, cash flow reversal, audit trail).
-6. Promotions engine (order/category/product, % and fixed, non-stacking rule, snapshot in orders).
-7. Order notes preservation (not overwritten by debt messages).
-8. Pure Python OpenXML (.xlsx) Excel export (filters preserved, column selection, RBAC cost price masking).
+Automated Test Suite for KiotPro v3 Features:
+1. Multi-tier packaging unit conversion & breakdown (e.g. 10 Thùng 3 Lốc 5 Lon)
+2. POS sales with selected unit conversion & inventory deduction
+3. Pre-orders ('ordered') & Customer pending orders count and amount
+4. Order adjustment (PUT), cancellation with rollback (DELETE), and clone (POST /clone)
+5. Promotion CRUD, active toggle, and discount calculation
+6. Server-side zero-dependency Excel (.xlsx) file generation & export endpoint
 """
 
-import sys
+import unittest
+import tempfile
 import os
 import json
-import io
-import datetime
-import tempfile
-import unittest
 import zipfile
+import io
+import sys
+import base64
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'backend'))
+
 import database
 import auth
 import server
-import export_xlsx
+from database import format_stock_breakdown
+from auth import hash_password, create_session
+from export_xlsx import create_xlsx
+
 
 class MockSocket:
     def __init__(self, data=b""):
@@ -40,6 +42,7 @@ class MockSocket:
 
     def close(self):
         pass
+
 
 def execute_http_request(method, path, headers=None, body=None):
     headers = headers or {}
@@ -65,13 +68,13 @@ def execute_http_request(method, path, headers=None, body=None):
         pass
 
     try:
-        server.KiotVietHandler(sock, ('127.0.0.1', 54321), FakeServer())
+        handler = server.KiotVietHandler(sock, ('127.0.0.1', 54321), FakeServer())
     except Exception:
         pass
 
     response_data = sock.output_buffer.getvalue()
     if not response_data:
-        return 500, {}, {}
+        return 500, {}, {}, b""
 
     parts = response_data.split(b"\r\n\r\n", 1)
     header_block = parts[0].decode('utf-8', errors='ignore')
@@ -94,403 +97,539 @@ def execute_http_request(method, path, headers=None, body=None):
         except Exception:
             parsed_json = {"raw": body_block}
 
-    return status_code, resp_headers, parsed_json
+    return status_code, resp_headers, parsed_json, body_block
 
-class TestKiotProV3Features(unittest.TestCase):
+
+class TestV3Features(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.test_db_dir = tempfile.TemporaryDirectory()
-        test_db = os.path.join(cls.test_db_dir.name, 'test_kiotviet_v3.db')
-        database.DB_FILE = test_db
-        server.DB_FILE = test_db
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.db_path = os.path.join(cls.temp_dir, 'test_kiotviet_v3.db')
+        database.DB_FILE = cls.db_path
+        server.DB_FILE = cls.db_path
+
+        # Initialize fresh DB
         database.init_db()
+
+        # Seed initial admin user
+        conn = database.get_db()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO users (username, password_hash, full_name, role, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+        """, ('admin_v3', hash_password('Admin@123456'), 'V3 Admin', 'admin'))
+        cls.admin_user_id = c.lastrowid
+        cls.admin_token, _ = create_session(c, cls.admin_user_id, '127.0.0.1', 'PythonTest/1.0')
+        conn.commit()
+        conn.close()
 
     @classmethod
     def tearDownClass(cls):
+        import shutil
         try:
-            cls.test_db_dir.cleanup()
+            shutil.rmtree(cls.temp_dir, ignore_errors=True)
         except Exception:
             pass
 
-    def setUp(self):
-        conn = database.get_db()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM sessions")
-            cursor.execute("DELETE FROM users")
-            cursor.execute("DELETE FROM audit_logs")
-            cursor.execute("DELETE FROM order_items")
-            cursor.execute("DELETE FROM orders")
-            cursor.execute("DELETE FROM customer_product_prices")
-            cursor.execute("DELETE FROM promotions")
-            cursor.execute("DELETE FROM product_units")
-            cursor.execute("DELETE FROM products")
-            cursor.execute("DELETE FROM customers")
-            cursor.execute("DELETE FROM cash_flow")
-            conn.commit()
-        finally:
-            conn.close()
-
-        # Create Admin user
-        code, headers, data = execute_http_request("POST", "/api/auth/bootstrap", body={
-            "username": "admin",
-            "full_name": "Quản Trị Viên",
-            "password": "Password@123"
-        })
-        self.assertEqual(code, 201)
-        self.admin_cookie = headers.get('set-cookie', '').split(';')[0]
-
-        # Create Cashier user
-        code, _, data = execute_http_request("POST", "/api/users", headers={"Cookie": self.admin_cookie}, body={
-            "username": "cashier1",
-            "full_name": "Thu Ngân 1",
-            "role": "cashier",
-            "password": "Password@123"
-        })
-        self.assertEqual(code, 201)
-
-        # Login as Cashier
-        code, headers, data = execute_http_request("POST", "/api/auth/login", body={
-            "username": "cashier1",
-            "password": "Password@123"
-        })
-        self.assertEqual(code, 200)
-        self.cashier_cookie = headers.get('set-cookie', '').split(';')[0]
-
-        # Seed test customer
-        code, _, data = execute_http_request("POST", "/api/customers", headers={"Cookie": self.admin_cookie}, body={
-            "code": "KH001",
-            "name": "Đại lý Hoàng Phát",
-            "phone": "0912345678",
-            "email": "hoangphat@example.com",
-            "group_name": "Đại lý cấp 1",
-            "address": "123 Lê Lợi, Q1"
-        })
-        self.assertEqual(code, 201)
-        self.customer_id = data.get('id')
-
-        # Seed test product: Lon Coca Cola (Stock: 100 Lon, Cost: 7000, Sale: 10000)
-        code, _, data = execute_http_request("POST", "/api/products", headers={"Cookie": self.admin_cookie}, body={
-            "code": "SP001",
-            "name": "Nước ngọt Coca Cola 330ml",
-            "barcode": "8930001001",
-            "category": "Nước giải khát",
-            "unit": "Lon",
-            "cost_price": 7000,
-            "sale_price": 10000,
-            "stock": 100,
-            "min_stock": 10
-        })
-        self.assertEqual(code, 201)
-        self.product_id = data.get('id')
+    def request(self, method, path, data=None, token=None):
+        headers = {}
+        use_token = token if token is not None else self.admin_token
+        if use_token:
+            headers['Authorization'] = f"Bearer {use_token}"
+        status_code, resp_headers, parsed_json, raw_body = execute_http_request(method, path, headers=headers, body=data)
+        return status_code, parsed_json, raw_body
 
     # ==========================================
-    # 1. Multi-level packaging units & conversions
+    # TEST 1: Stock breakdown helper
     # ==========================================
-    def test_01_product_packaging_units_and_breakdown(self):
-        """Test multi-level units creation, rate validation, and stock breakdown."""
-        # 1. Base unit was automatically created in product_units
-        code, _, units = execute_http_request("GET", f"/api/products/{self.product_id}/units", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(code, 200)
-        self.assertEqual(len(units), 1)
-        self.assertTrue(units[0]['is_base'])
-        self.assertEqual(units[0]['name'], "Lon")
+    def test_01_stock_breakdown_calculation(self):
+        units = [
+            {'unit_name': 'Lon', 'conversion_rate': 1.0, 'is_base': 1},
+            {'unit_name': 'Lốc', 'conversion_rate': 6.0, 'is_base': 0},
+            {'unit_name': 'Thùng', 'conversion_rate': 36.0, 'is_base': 0}
+        ]
+        # 383 base units:
+        # 383 // 36 = 10 Thùng (leaves 23)
+        # 23 // 6 = 3 Lốc (leaves 5)
+        # 5 Lon
+        res = format_stock_breakdown(383, units)
+        self.assertEqual(res, "10 Thùng 3 Lốc 5 Lon")
 
-        # 2. Add packaging unit: Lốc (6 Lon)
-        code, _, res = execute_http_request("POST", f"/api/products/{self.product_id}/units", headers={"Cookie": self.admin_cookie}, body={
-            "name": "Lốc",
-            "conversion_rate": 6,
-            "sale_price": 58000,
-            "barcode": "8930001002"
-        })
-        self.assertEqual(code, 201)
+        # Exact multiple
+        res_exact = format_stock_breakdown(72, units)
+        self.assertEqual(res_exact, "2 Thùng")
 
-        # 3. Add packaging unit: Thùng (24 Lon)
-        code, _, res = execute_http_request("POST", f"/api/products/{self.product_id}/units", headers={"Cookie": self.admin_cookie}, body={
-            "name": "Thùng",
-            "conversion_rate": 24,
-            "sale_price": 230000,
-            "barcode": "8930001003"
-        })
-        self.assertEqual(code, 201)
+        # Zero stock
+        res_zero = format_stock_breakdown(0, units)
+        self.assertEqual(res_zero, "0 Lon")
 
-        # 4. Conversion rate <= 0 must be rejected
-        code, _, err = execute_http_request("POST", f"/api/products/{self.product_id}/units", headers={"Cookie": self.admin_cookie}, body={
-            "name": "Hộp lỗi",
-            "conversion_rate": 0
-        })
-        self.assertEqual(code, 400)
-
-        # 5. Stock breakdown calculation test
-        code, _, prods = execute_http_request("GET", f"/api/products?q=SP001", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(code, 200)
-        p = prods[0]
-        # 100 Lon = 4 Thùng (96 Lon) + 0 Lốc + 4 Lon
-        self.assertIn("4 Thùng", p['stock_breakdown'])
-        self.assertIn("4 Lon", p['stock_breakdown'])
+        # Decimal support
+        res_dec = format_stock_breakdown(36.5, units)
+        self.assertEqual(res_dec, "1 Thùng 0.5 Lon")
 
     # ==========================================
-    # 2. Unit-based POS selling & Stock deduction
+    # TEST 2: Product Creation with Multi-units
     # ==========================================
-    def test_02_pos_selling_with_packaging_unit(self):
-        """Test POS selling with unit conversion: deducting base units and applying correct price."""
-        # Add unit Thùng (24 Lon)
-        code, _, res = execute_http_request("POST", f"/api/products/{self.product_id}/units", headers={"Cookie": self.admin_cookie}, body={
-            "name": "Thùng",
-            "conversion_rate": 24,
-            "sale_price": 230000
-        })
-        thung_unit_id = res['id']
-
-        # Sell 2 Thùng (= 48 Lon) to customer
-        code, _, order = execute_http_request("POST", "/api/orders", headers={"Cookie": self.cashier_cookie}, body={
-            "customer_id": self.customer_id,
-            "status": "completed",
-            "payment_method": "cash",
-            "actual_paid": 460000,
-            "notes": "Giao gấp buổi sáng",
-            "items": [
-                {
-                    "product_id": self.product_id,
-                    "unit_id": thung_unit_id,
-                    "unit_name": "Thùng",
-                    "conversion_rate": 24,
-                    "quantity": 2,
-                    "unit_price": 230000
-                }
+    def test_02_product_create_and_units_query(self):
+        new_prod = {
+            'code': 'SP_BIA01',
+            'barcode': '893500112233',
+            'name': 'Bia Heineken Sleek Lon 330ml',
+            'category': 'Đồ uống có cồn',
+            'unit': 'Lon',
+            'cost_price': 15000,
+            'sale_price': 22000,
+            'stock': 125,
+            'min_stock': 10,
+            'units': [
+                {'unit_name': 'Lon', 'conversion_rate': 1.0, 'is_base': 1, 'sale_price': 22000},
+                {'unit_name': 'Thùng', 'conversion_rate': 24.0, 'is_base': 0, 'sale_price': 510000}
             ]
-        })
-        self.assertEqual(code, 201)
-        self.assertEqual(order['total_amount'], 460000)
-        self.assertEqual(order['notes'], "Giao gấp buổi sáng")
+        }
+        status, data, _ = self.request('POST', '/api/products', new_prod)
+        self.assertEqual(status, 201)
+        prod_id = data['id']
 
-        # Verify stock was deducted by 48 base units (100 - 48 = 52 Lon)
-        code, _, prods = execute_http_request("GET", f"/api/products?q=SP001", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(code, 200)
-        self.assertEqual(prods[0]['stock'], 52)
-
-    # ==========================================
-    # 3. Customer pricing with unit conversion
-    # ==========================================
-    def test_03_customer_pricing_with_packaging_unit(self):
-        """Test customer price lookup and ensure conversion rate is not double-multiplied."""
-        # Add unit Lốc (6 Lon)
-        code, _, res = execute_http_request("POST", f"/api/products/{self.product_id}/units", headers={"Cookie": self.admin_cookie}, body={
-            "name": "Lốc",
-            "conversion_rate": 6,
-            "sale_price": 58000
-        })
-        loc_unit_id = res['id']
-
-        # Set custom price for base unit (Lon) = 9,000đ (instead of 10,000đ)
-        code, _, res = execute_http_request("POST", f"/api/customers/{self.customer_id}/prices", headers={"Cookie": self.admin_cookie}, body={
-            "product_id": self.product_id,
-            "custom_price": 9000
-        })
-        self.assertEqual(code, 200)
-
-        # Lookup price for customer with unit Lốc (rate 6) -> 9,000 * 6 = 54,000đ
-        code, _, lookup = execute_http_request("GET", f"/api/customer-prices/lookup?customer_id={self.customer_id}&product_id={self.product_id}&unit_id={loc_unit_id}", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(code, 200)
-        self.assertTrue(lookup['has_custom_price'])
-        self.assertEqual(lookup['final_unit_price'], 54000)
+        # Query products
+        status, products, _ = self.request('GET', '/api/products')
+        self.assertEqual(status, 200)
+        found = next((p for p in products if p['id'] == prod_id), None)
+        self.assertIsNotNone(found)
+        self.assertEqual(found['stock'], 125)
+        self.assertEqual(found['stock_breakdown'], '5 Thùng 5 Lon')
+        self.assertGreaterEqual(len(found['units']), 2)
 
     # ==========================================
-    # 4. Order Lifecycle: Pending -> Completed
+    # TEST 3: POS sale with Unit Conversion
     # ==========================================
-    def test_04_pending_order_and_completion(self):
-        """Test pending order does not affect inventory or debt until explicitly completed."""
-        # Initial stock: 100 Lon, Customer Debt: 0
-        code, _, order = execute_http_request("POST", "/api/orders", headers={"Cookie": self.cashier_cookie}, body={
-            "customer_id": self.customer_id,
-            "status": "pending",
-            "payment_method": "debt",
-            "actual_paid": 0,
-            "notes": "Đơn đặt hàng chờ giao chiều",
-            "items": [
+    def test_03_pos_sale_with_unit_conversion(self):
+        # Pepsi SP0011 has Lon (1), Lốc (6), Thùng (36), initial stock = 383 Lon
+        status, products, _ = self.request('GET', '/api/products')
+        pepsi = next((p for p in products if p['code'] == 'SP0011'), None)
+        self.assertIsNotNone(pepsi)
+        initial_stock = pepsi['stock']
+
+        # Sell 2 Lốc of Pepsi (2 * 6 = 12 Lon)
+        order_data = {
+            'customer_id': 2,
+            'customer_name': 'Đại lý Minh Phát',
+            'status': 'completed',
+            'items': [
                 {
-                    "product_id": self.product_id,
-                    "quantity": 10,
-                    "unit_price": 10000
+                    'product_id': pepsi['id'],
+                    'quantity': 2,
+                    'unit': 'Lốc',
+                    'unit_conversion_rate': 6.0,
+                    'sale_price': 58000
                 }
-            ]
-        })
-        self.assertEqual(code, 201)
-        order_id = order['id']
-        self.assertEqual(order['status'], "pending")
+            ],
+            'discount': 0,
+            'vat_percent': 0,
+            'paid_amount': 116000,
+            'payment_method': 'cash'
+        }
+        status, res, _ = self.request('POST', '/api/orders', order_data)
+        self.assertEqual(status, 201)
+        order_id = res['id']
 
-        # 1. Stock MUST NOT be deducted
-        code, _, prods = execute_http_request("GET", f"/api/products?q=SP001", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(prods[0]['stock'], 100)
+        # Check stock deduction: initial_stock - 12
+        status, products_after, _ = self.request('GET', '/api/products')
+        pepsi_after = next((p for p in products_after if p['id'] == pepsi['id']), None)
+        self.assertEqual(pepsi_after['stock'], initial_stock - 12)
 
-        # 2. Customer debt MUST NOT be added
-        code, _, custs = execute_http_request("GET", f"/api/customers?q=KH001", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(custs[0]['debt'], 0)
-        self.assertEqual(custs[0]['pending_orders_count'], 1)
-        self.assertEqual(custs[0]['pending_orders_amount'], 100000)
-
-        # 3. Customer pending orders endpoint
-        code, _, pending_list = execute_http_request("GET", f"/api/customers/{self.customer_id}/pending-orders", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(code, 200)
-        self.assertEqual(len(pending_list), 1)
-        self.assertEqual(pending_list[0]['id'], order_id)
-
-        # 4. Complete the order
-        code, _, res = execute_http_request("POST", f"/api/orders/{order_id}/complete", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(code, 200)
-        self.assertEqual(res['new_status'], "completed")
-
-        # 5. After completion: stock MUST be deducted (100 - 10 = 90) and debt added (100,000đ)
-        code, _, prods = execute_http_request("GET", f"/api/products?q=SP001", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(prods[0]['stock'], 90)
-
-        code, _, custs = execute_http_request("GET", f"/api/customers?q=KH001", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(custs[0]['debt'], 100000)
-        self.assertEqual(custs[0]['pending_orders_count'], 0)
+        # Check order detail
+        status, order_detail, _ = self.request('GET', f"/api/orders/{order_id}")
+        self.assertEqual(status, 200)
+        item = order_detail['items'][0]
+        self.assertEqual(item['unit'], 'Lốc')
+        self.assertEqual(item['unit_conversion_rate'], 6.0)
+        self.assertEqual(item['quantity'], 2)
 
     # ==========================================
-    # 5. Safe Order Cancellation & Reversal
+    # TEST 4: Pre-orders ('ordered') & Customer pending stats
     # ==========================================
-    def test_05_safe_order_cancellation(self):
-        """Test cancelling a completed order reverses inventory, customer debt, and cash flow with audit."""
-        # Create completed order with 10 Lon, 50,000 paid cash, 50,000 recorded debt
-        code, _, order = execute_http_request("POST", "/api/orders", headers={"Cookie": self.cashier_cookie}, body={
-            "customer_id": self.customer_id,
-            "status": "completed",
-            "payment_method": "cash",
-            "actual_paid": 50000,
-            "notes": "Hóa đơn test hủy",
-            "items": [
+    def test_04_preorder_and_customer_pending_stats(self):
+        status, customers_before, _ = self.request('GET', '/api/customers')
+        cust3_before = next((c for c in customers_before if c['id'] == 3), None)
+        initial_pending_count = cust3_before.get('pending_orders_count', 0)
+        initial_pending_amount = cust3_before.get('pending_orders_amount', 0)
+
+        # SP0011 stock before pre-order
+        status, prods_before, _ = self.request('GET', '/api/products')
+        pepsi_before = next((p for p in prods_before if p['code'] == 'SP0011'), None)
+        stock_before = pepsi_before['stock']
+
+        preorder_data = {
+            'customer_id': 3,
+            'customer_name': 'Siêu thị Mini Mart 24h',
+            'status': 'ordered', # Pre-order!
+            'items': [
                 {
-                    "product_id": self.product_id,
-                    "quantity": 10,
-                    "unit_price": 10000
+                    'product_id': pepsi_before['id'],
+                    'quantity': 3,
+                    'unit': 'Thùng',
+                    'unit_conversion_rate': 36.0,
+                    'sale_price': 330000
                 }
+            ],
+            'discount': 0,
+            'vat_percent': 0,
+            'paid_amount': 0,
+            'payment_method': 'debt',
+            'notes': 'Khách hẹn giao sáng mai'
+        }
+        status, pre_res, _ = self.request('POST', '/api/orders', preorder_data)
+        self.assertEqual(status, 201)
+        preorder_id = pre_res['id']
+
+        # Stock should NOT be deducted yet!
+        status, prods_after, _ = self.request('GET', '/api/products')
+        pepsi_after = next((p for p in prods_after if p['id'] == pepsi_before['id']), None)
+        self.assertEqual(pepsi_after['stock'], stock_before)
+        # But ordered_qty should reflect 3 Thùng * 36 = 108 Lon!
+        self.assertGreaterEqual(pepsi_after['ordered_qty'], 108)
+
+        # Customer pending orders count and amount should increase
+        status, customers_after, _ = self.request('GET', '/api/customers')
+        cust3_after = next((c for c in customers_after if c['id'] == 3), None)
+        self.assertEqual(cust3_after['pending_orders_count'], initial_pending_count + 1)
+        self.assertEqual(cust3_after['pending_orders_amount'], initial_pending_amount + 990000)
+
+        # Transition preorder from 'ordered' -> 'completed' via PUT
+        status, update_res, _ = self.request('PUT', f"/api/orders/{preorder_id}", {
+            'status': 'completed',
+            'notes': 'Đã xuất kho giao cho khách'
+        })
+        self.assertEqual(status, 200)
+
+        # Now stock must be deducted by 108 Lon!
+        status, prods_done, _ = self.request('GET', '/api/products')
+        pepsi_done = next((p for p in prods_done if p['id'] == pepsi_before['id']), None)
+        self.assertEqual(pepsi_done['stock'], stock_before - 108)
+
+        # Customer pending stats should be reset
+        status, cust_done, _ = self.request('GET', '/api/customers')
+        cust3_done = next((c for c in cust_done if c['id'] == 3), None)
+        self.assertEqual(cust3_done['pending_orders_count'], initial_pending_count)
+
+    # ==========================================
+    # TEST 5: Order Clone & Order Cancel with Rollback
+    # ==========================================
+    def test_05_order_clone_and_cancel_rollback(self):
+        # Create completed order
+        status, prods, _ = self.request('GET', '/api/products')
+        p1 = prods[0]
+        initial_stock = p1['stock']
+
+        order_data = {
+            'customer_id': 1,
+            'customer_name': 'Khách lẻ',
+            'status': 'completed',
+            'items': [
+                {
+                    'product_id': p1['id'],
+                    'quantity': 5,
+                    'unit': p1['unit'],
+                    'unit_conversion_rate': 1.0,
+                    'sale_price': p1['sale_price']
+                }
+            ],
+            'discount': 0,
+            'vat_percent': 0,
+            'paid_amount': 5 * p1['sale_price'],
+            'payment_method': 'cash'
+        }
+        status, res, _ = self.request('POST', '/api/orders', order_data)
+        self.assertEqual(status, 201)
+        order_id = res['id']
+
+        # Verify stock decreased by 5
+        status, prods_bought, _ = self.request('GET', '/api/products')
+        self.assertEqual(prods_bought[0]['stock'], initial_stock - 5)
+
+        # Test Clone
+        status, clone_res, _ = self.request('POST', f"/api/orders/{order_id}/clone")
+        self.assertEqual(status, 200)
+        self.assertIn('order', clone_res)
+        self.assertEqual(len(clone_res['order']['items']), 1)
+        self.assertEqual(clone_res['order']['items'][0]['quantity'], 5)
+
+        # Test Cancel (DELETE)
+        status, del_res, _ = self.request('DELETE', f"/api/orders/{order_id}")
+        self.assertEqual(status, 200)
+
+        # Verify stock is restored!
+        status, prods_restored, _ = self.request('GET', '/api/products')
+        self.assertEqual(prods_restored[0]['stock'], initial_stock)
+
+        # Verify order status is 'cancelled'
+        status, order_detail, _ = self.request('GET', f"/api/orders/{order_id}")
+        self.assertEqual(order_detail['status'], 'cancelled')
+
+    # ==========================================
+    # TEST 6: Promotion CRUD & Active Toggle
+    # ==========================================
+    def test_06_promotions_management(self):
+        promo_data = {
+            'code': 'TEST_GIAM20',
+            'name': 'Tri ân khách hàng giảm 20%',
+            'type': 'order_discount_percent',
+            'discount_value': 20.0,
+            'min_order_amount': 200000,
+            'notes': 'Áp dụng cho mọi đơn từ 200k'
+        }
+        status, res, _ = self.request('POST', '/api/promotions', promo_data)
+        self.assertEqual(status, 201)
+        promo_id = res['id']
+
+        # Query promotions
+        status, promos, _ = self.request('GET', '/api/promotions')
+        self.assertEqual(status, 200)
+        found = next((p for p in promos if p['id'] == promo_id), None)
+        self.assertIsNotNone(found)
+        self.assertEqual(found['discount_value'], 20.0)
+        self.assertEqual(found['is_active'], 1)
+
+        # Toggle inactive
+        status, toggle_res, _ = self.request('POST', f"/api/promotions/{promo_id}/toggle")
+        self.assertEqual(status, 200)
+        self.assertEqual(toggle_res['is_active'], 0)
+
+        # Active-only query should not include it
+        status, active_promos, _ = self.request('GET', '/api/promotions?active=true')
+        self.assertEqual(status, 200)
+        active_found = next((p for p in active_promos if p['id'] == promo_id), None)
+        self.assertIsNone(active_found)
+
+        # Toggle back active
+        status, toggle_res, _ = self.request('POST', f"/api/promotions/{promo_id}/toggle")
+        self.assertEqual(status, 200)
+        self.assertEqual(toggle_res['is_active'], 1)
+
+    # ==========================================
+    # TEST 7: Excel (.xlsx) Generation & API Endpoint
+    # ==========================================
+    def test_07_excel_export_endpoint(self):
+        payload = {
+            'title': 'Báo Cáo Thử Nghiệm',
+            'sheet_name': 'TestSheet',
+            'filename': 'test_export.xlsx',
+            'headers': ['Mã đơn', 'Khách hàng', 'Tổng tiền', 'Trạng thái'],
+            'rows': [
+                ['HD0001', 'Nguyễn Văn A', 350000, 'Đã hoàn thành'],
+                ['HD0002', 'Công ty ABC', 1250000, 'Khách đang đặt'],
+                ['HD0003', 'Trần Thị B', 45000, 'Đã hủy']
             ]
-        })
-        self.assertEqual(code, 201)
-        order_id = order['id']
-        order_code = order['code']
+        }
+        status, _, raw_bytes = self.request('POST', '/api/export/xlsx', payload)
+        self.assertEqual(status, 200)
+        self.assertTrue(raw_bytes.startswith(b'PK\x03\x04'))
 
-        # Stock is now 90 Lon, Customer debt is 50,000đ
-        code, _, prods = execute_http_request("GET", f"/api/products?q=SP001", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(prods[0]['stock'], 90)
-        code, _, custs = execute_http_request("GET", f"/api/customers?q=KH001", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(custs[0]['debt'], 50000)
-
-        # Cancel order
-        code, _, res = execute_http_request("POST", f"/api/orders/{order_id}/cancel", headers={"Cookie": self.admin_cookie}, body={
-            "reason": "Khách hủy lấy hàng, hoàn trả kho"
-        })
-        self.assertEqual(code, 200)
-        self.assertEqual(res['new_status'], "cancelled")
-
-        # 1. Stock must be returned to 100
-        code, _, prods = execute_http_request("GET", f"/api/products?q=SP001", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(prods[0]['stock'], 100)
-
-        # 2. Customer debt must be reduced by 50,000 -> 0
-        code, _, custs = execute_http_request("GET", f"/api/customers?q=KH001", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(custs[0]['debt'], 0)
-
-        # 3. Cash flow must have a reversal payment record for 50,000
-        code, _, cfs = execute_http_request("GET", "/api/cash-flow", headers={"Cookie": self.admin_cookie})
-        cancellation_entries = [cf for cf in cfs if 'hủy' in cf['category'].lower()]
-        self.assertEqual(len(cancellation_entries), 1)
-        self.assertEqual(cancellation_entries[0]['type'], 'payment')
-        self.assertEqual(cancellation_entries[0]['amount'], 50000)
-
-        # 4. Audit log must exist
-        code, _, audit = execute_http_request("GET", f"/api/audit-logs?entity_code={order_code}", headers={"Cookie": self.admin_cookie})
-        actions = [a['action'] for a in audit['items']]
-        self.assertIn('ORDER_CANCEL', actions)
+        # Inspect ZIP structure
+        with zipfile.ZipFile(io.BytesIO(raw_bytes), 'r') as z:
+            names = z.namelist()
+            self.assertIn('[Content_Types].xml', names)
+            self.assertIn('xl/workbook.xml', names)
+            self.assertIn('xl/styles.xml', names)
+            self.assertIn('xl/worksheets/sheet1.xml', names)
 
     # ==========================================
-    # 6. Promotions engine & Snapshot
+    # TEST 8: Multi-unit Purchases, Base Stock & Weighted Average Cost (MAC)
     # ==========================================
-    def test_06_promotions_and_order_snapshot(self):
-        """Test promotion evaluation, non-stacking rule, and snapshot preservation."""
-        # Create Promotion 1: 10% off for all orders >= 100,000đ
-        today = datetime.date.today().isoformat()
-        next_month = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+    def test_08_multi_unit_purchase_and_mac(self):
+        # 1. Fetch SP0011 (Pepsi)
+        status, prods, _ = self.request('GET', '/api/products')
+        self.assertEqual(status, 200)
+        pepsi = next(p for p in prods if p['code'] == 'SP0011')
+        orig_stock = pepsi['stock']
+        orig_cost = pepsi['cost_price']
 
-        code, _, promo = execute_http_request("POST", "/api/promotions", headers={"Cookie": self.admin_cookie}, body={
-            "name": "Giảm 10% đơn từ 100k",
-            "scope": "order",
-            "discount_type": "percent",
-            "discount_value": 10,
-            "min_order_amount": 100000,
-            "start_date": today,
-            "end_date": next_month,
-            "is_active": 1
-        })
-        self.assertEqual(code, 201)
-        promo_id = promo['id']
+        # 2. Receive 2 Thùng (each Thùng = 36 Lon, price = 324,000đ/thùng -> 9,000đ/lon)
+        purchase_payload = {
+            'supplier_id': 1,
+            'supplier_name': 'Công ty Nước Giải Khát Suntory Pepsico',
+            'items': [{
+                'product_id': pepsi['id'],
+                'unit': 'thùng',
+                'unit_conversion_rate': 36.0,
+                'quantity': 2,
+                'import_price': 324000.0
+            }],
+            'paid_amount': 648000.0,
+            'payment_method': 'bank',
+            'notes': 'Nhập 2 thùng Pepsi có tính quy đổi đơn vị'
+        }
+        status, p_res, _ = self.request('POST', '/api/purchases', purchase_payload)
+        self.assertEqual(status, 201)
+        p_code = p_res['code']
 
-        # Check promotion applicability on POS cart: 15 Lon * 10,000 = 150,000đ -> discount 15,000đ
-        code, _, check = execute_http_request("POST", "/api/promotions/check", headers={"Cookie": self.cashier_cookie}, body={
-            "customer_id": self.customer_id,
-            "items": [{"product_id": self.product_id, "quantity": 15, "unit_price": 10000}]
-        })
-        self.assertEqual(code, 200)
-        self.assertIsInstance(check, list)
-        self.assertTrue(len(check) > 0)
-        top_promo = check[0]
-        self.assertEqual(top_promo['id'], promo_id)
-        self.assertEqual(top_promo['calculated_discount'], 15000)
+        # 3. Verify stock increased by 2 * 36 = 72 base units
+        status, prods, _ = self.request('GET', '/api/products')
+        self.assertEqual(status, 200)
+        updated_pepsi = next(p for p in prods if p['code'] == 'SP0011')
+        expected_stock = orig_stock + 72
+        self.assertEqual(updated_pepsi['stock'], expected_stock)
 
-        # Create Order with promotion applied
-        code, _, order = execute_http_request("POST", "/api/orders", headers={"Cookie": self.cashier_cookie}, body={
-            "customer_id": self.customer_id,
-            "promotion_id": promo_id,
-            "discount": 15000,
-            "payment_method": "cash",
-            "actual_paid": 135000,
-            "items": [{"product_id": self.product_id, "quantity": 15, "unit_price": 10000}]
-        })
-        self.assertEqual(code, 201)
-        self.assertEqual(order['total_amount'], 150000)
-        self.assertEqual(order['discount'], 15000)
-        self.assertEqual(order['final_amount'], 135000)
-        self.assertEqual(order['promotion_id'], promo_id)
+        # 4. Verify MAC cost price calculation
+        expected_cost = round(((orig_stock * orig_cost) + (72 * 9000.0)) / expected_stock, 2)
+        self.assertAlmostEqual(updated_pepsi['cost_price'], expected_cost, places=1)
+
+        # 5. Verify GET /api/purchases/{id} returns voucher details and unit
+        status, p_detail, _ = self.request('GET', f"/api/purchases/{p_res['id']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(p_detail['code'], p_code)
+        self.assertEqual(len(p_detail['items']), 1)
+        self.assertEqual(p_detail['items'][0]['unit'], 'thùng')
+        self.assertEqual(p_detail['items'][0]['quantity'], 2.0)
+
+        # 6. Verify audit timeline for purchase
+        status, tl, _ = self.request('GET', f"/api/timeline/purchase/{p_code}")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(tl['timeline']), 1)
 
     # ==========================================
-    # 7. Excel OpenXML (.xlsx) Export & RBAC Masking
+    # TEST 9: Multi-unit Sales Return & Single Return Detail API
     # ==========================================
-    def test_07_excel_export_and_cost_price_masking(self):
-        """Test pure Python XLSX generation, filter preservation, and RBAC cost price masking."""
-        # 1. Admin export products: cost_price must be included
-        code, headers, data = execute_http_request("GET", "/api/export/products", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(code, 200)
-        self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers.get('content-type', ''))
-        raw_xlsx = data.get('raw')
-        self.assertIsNotNone(raw_xlsx)
-        # Verify valid ZIP / OpenXML structure
-        with zipfile.ZipFile(io.BytesIO(raw_xlsx), 'r') as zf:
-            self.assertIn('[Content_Types].xml', zf.namelist())
-            self.assertIn('xl/workbook.xml', zf.namelist())
-            sheet1_xml = zf.read('xl/worksheets/sheet1.xml').decode('utf-8')
-            # Admin can see 7000 (cost price of SP001)
-            self.assertIn("7000", sheet1_xml)
+    def test_09_multi_unit_return_and_get(self):
+        status, prods, _ = self.request('GET', '/api/products')
+        pepsi = next(p for p in prods if p['code'] == 'SP0011')
+        stock_before = pepsi['stock']
 
-        # 2. Cashier export products: cost_price MUST NOT be visible
-        code, headers, data = execute_http_request("GET", "/api/export/products", headers={"Cookie": self.cashier_cookie})
-        self.assertEqual(code, 200)
-        with zipfile.ZipFile(io.BytesIO(data.get('raw')), 'r') as zf:
-            sheet1_xml = zf.read('xl/worksheets/sheet1.xml').decode('utf-8')
-            # Cashier CANNOT see 7000
-            self.assertNotIn("7000", sheet1_xml)
+        # Customer returns 1 Lốc (1 Lốc = 6 Lon)
+        return_payload = {
+            'customer_id': 1,
+            'customer_name': 'Khách lẻ',
+            'items': [{
+                'product_id': pepsi['id'],
+                'unit': 'lốc',
+                'unit_conversion_rate': 6.0,
+                'quantity': 1,
+                'return_price': 60000.0
+            }],
+            'refund_amount': 60000.0,
+            'debt_deduct_amount': 0.0,
+            'fund_type': 'cash',
+            'notes': 'Khách hoàn trả 1 lốc Pepsi'
+        }
+        status, r_res, _ = self.request('POST', '/api/returns', return_payload)
+        self.assertEqual(status, 201)
+        r_code = r_res['code']
+        r_id = r_res['id']
 
-        # 3. Orders export with column selector and filters
-        code, headers, data = execute_http_request("GET", "/api/export/orders?status=completed&columns=code,customer_name,final_amount", headers={"Cookie": self.admin_cookie})
-        self.assertEqual(code, 200)
-        with zipfile.ZipFile(io.BytesIO(data.get('raw')), 'r') as zf:
-            sheet1_xml = zf.read('xl/worksheets/sheet1.xml').decode('utf-8')
-            self.assertIn("Mã đơn hàng", sheet1_xml)
-            self.assertIn("Khách hàng", sheet1_xml)
-            self.assertIn("Khách cần trả", sheet1_xml)
-            # Unselected columns must not be in headers
-            self.assertNotIn("Ghi chú", sheet1_xml)
+        # Verify stock increased by 6 base units
+        status, prods, _ = self.request('GET', '/api/products')
+        updated_pepsi = next(p for p in prods if p['code'] == 'SP0011')
+        self.assertEqual(updated_pepsi['stock'], stock_before + 6)
+
+        # Verify GET /api/returns/{id}
+        status, ret_detail, _ = self.request('GET', f"/api/returns/{r_id}")
+        self.assertEqual(status, 200)
+        self.assertEqual(ret_detail['code'], r_code)
+        self.assertEqual(ret_detail['items'][0]['unit'], 'lốc')
+        self.assertEqual(ret_detail['items'][0]['quantity'], 1.0)
+
+        # Verify audit timeline for return
+        status, tl, _ = self.request('GET', f"/api/timeline/return/{r_code}")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(len(tl['timeline']), 1)
+
+    # ==========================================
+    # TEST 10: Supplier, Customer, and Product Full Management (Update & Delete)
+    # ==========================================
+    def test_10_supplier_customer_product_management(self):
+        # 1. Supplier Update & Delete
+        supp_data = {
+            'code': 'NCC9999',
+            'name': 'Nhà Cung Cấp Thử Nghiệm',
+            'phone': '0901234567',
+            'address': 'Hà Nội',
+            'debt': 0,
+            'notes': 'Test NCC'
+        }
+        status, s_res, _ = self.request('POST', '/api/suppliers', supp_data)
+        self.assertEqual(status, 201)
+        s_id = s_res['id']
+
+        # Update supplier
+        status, _, _ = self.request('PUT', f"/api/suppliers/{s_id}", {
+            'name': 'Nhà Cung Cấp Thử Nghiệm (Đã Sửa)',
+            'phone': '0988776655',
+            'address': 'TP.HCM',
+            'debt': 0,
+            'notes': 'Updated'
+        })
+        self.assertEqual(status, 200)
+
+        # Delete supplier
+        status, _, _ = self.request('DELETE', f"/api/suppliers/{s_id}")
+        self.assertEqual(status, 200)
+        status, supps, _ = self.request('GET', '/api/suppliers')
+        self.assertIsNone(next((s for s in supps if s['id'] == s_id), None))
+
+        # 2. Customer Delete
+        cust_data = {
+            'code': 'KH9999',
+            'name': 'Khách Hàng Thử Nghiệm',
+            'phone': '0912345678',
+            'email': 'kh_test@example.com',
+            'address': 'Đà Nẵng',
+            'group_name': 'Khách lẻ',
+            'debt': 0,
+            'notes': 'Test KH'
+        }
+        status, c_res, _ = self.request('POST', '/api/customers', cust_data)
+        self.assertEqual(status, 201)
+        c_id = c_res['id']
+
+        status, _, _ = self.request('DELETE', f"/api/customers/{c_id}")
+        self.assertEqual(status, 200)
+        status, custs, _ = self.request('GET', '/api/customers')
+        self.assertIsNone(next((c for c in custs if c['id'] == c_id), None))
+
+        # 3. Product Delete with Units cleanup
+        prod_data = {
+            'code': 'SP9999',
+            'name': 'Sản Phẩm Thử Nghiệm',
+            'unit': 'gói',
+            'cost_price': 10000,
+            'sale_price': 15000,
+            'stock': 100,
+            'min_stock': 10,
+            'units': [
+                {'unit_name': 'thùng', 'conversion_rate': 20.0, 'sale_price': 280000.0, 'cost_price': 190000.0}
+            ]
+        }
+        status, p_res, _ = self.request('POST', '/api/products', prod_data)
+        self.assertEqual(status, 201)
+        p_id = p_res['id']
+
+        status, _, _ = self.request('DELETE', f"/api/products/{p_id}")
+        self.assertEqual(status, 200)
+        status, prods, _ = self.request('GET', '/api/products')
+        self.assertIsNone(next((p for p in prods if p['id'] == p_id), None))
+
+    # ==========================================
+    # TEST 11: Database Backup Download & Safe Restore
+    # ==========================================
+    def test_11_backup_restore_integrity(self):
+        # 1. Download valid backup
+        status, _, db_bytes = self.request('GET', '/api/backup/download')
+        self.assertEqual(status, 200)
+        self.assertTrue(db_bytes.startswith(b"SQLite format 3\x00"))
+
+        # 2. Reject corrupt backup file
+        corrupt_b64 = base64.b64encode(b"this is definitely not a sqlite database file").decode('utf-8')
+        status, err_res, _ = self.request('POST', '/api/backup/restore', {'database_base64': corrupt_b64})
+        self.assertEqual(status, 400)
+        self.assertIn('INVALID_SQLITE_FILE', str(err_res))
+
+        # 3. Accept and safely restore valid backup
+        valid_b64 = base64.b64encode(db_bytes).decode('utf-8')
+        status, restore_res, _ = self.request('POST', '/api/backup/restore', {'database_base64': valid_b64})
+        self.assertEqual(status, 200)
+        self.assertTrue(restore_res['success'])
+        self.assertIn('safety_backup', restore_res)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,6 @@
 """
-Pure Python OpenXML (.xlsx) Generator for KiotPro.
-Built strictly with Python standard library (zipfile, xml.sax.saxutils, io).
+Pure Python .xlsx Generator using zipfile and standard XML.
+Compatible with Microsoft Excel, LibreOffice, and Google Sheets.
 Zero third-party dependencies required.
 """
 
@@ -8,7 +8,8 @@ import io
 import zipfile
 import xml.sax.saxutils as saxutils
 
-def get_col_letter(col_idx: int) -> str:
+
+def get_col_letter(col_idx):
     """Convert 1-based column index to Excel column letters (A, B, ..., Z, AA, AB, ...)."""
     result = ""
     while col_idx > 0:
@@ -16,17 +17,17 @@ def get_col_letter(col_idx: int) -> str:
         result = chr(65 + remainder) + result
     return result
 
-def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
+
+def create_xlsx(sheet_name, headers, rows):
     """
     Generate valid XLSX bytes from headers and rows.
-    sheet_name: str
     headers: list of str
     rows: list of list of values (str, int, float, None)
     """
     output = io.BytesIO()
-    
+
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # [Content_Types].xml
+        # 1. [Content_Types].xml
         content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -37,14 +38,14 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
 </Types>"""
         zf.writestr('[Content_Types].xml', content_types)
 
-        # _rels/.rels
+        # 2. _rels/.rels
         root_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"""
         zf.writestr('_rels/.rels', root_rels)
 
-        # xl/_rels/workbook.xml.rels
+        # 3. xl/_rels/workbook.xml.rels
         wb_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
@@ -52,8 +53,8 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
 </Relationships>"""
         zf.writestr('xl/_rels/workbook.xml.rels', wb_rels)
 
-        # xl/workbook.xml
-        safe_sheet_name = saxutils.escape(sheet_name[:31] or "Sheet1")
+        # 4. xl/workbook.xml
+        safe_sheet_name = saxutils.escape(sheet_name[:31] if sheet_name else "Sheet1")
         workbook = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
@@ -62,12 +63,12 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
 </workbook>"""
         zf.writestr('xl/workbook.xml', workbook)
 
-        # xl/styles.xml (0: regular cell, 1: bold header with gray background, 2: number)
+        # 5. xl/styles.xml (0=normal, 1=header bold navy blue with gray fill, 2=number formatted)
         styles = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <fonts count="2">
-    <font><name val="Arial"/><sz val="10"/></font>
-    <font><b/><color rgb="FF0F172A"/><name val="Arial"/><sz val="10"/></font>
+    <font><name val="Segoe UI"/><sz val="11"/></font>
+    <font><b/><color rgb="FF1E3A8A"/><name val="Segoe UI"/><sz val="11"/></font>
   </fonts>
   <fills count="3">
     <fill><patternFill patternType="none"/></fill>
@@ -77,10 +78,10 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
   <borders count="2">
     <border><left/><right/><top/><bottom/><diagonal/></border>
     <border>
-      <left style="thin"><color rgb="FFE2E8F0"/></left>
-      <right style="thin"><color rgb="FFE2E8F0"/></right>
-      <top style="thin"><color rgb="FFE2E8F0"/></top>
-      <bottom style="thin"><color rgb="FFE2E8F0"/></bottom>
+      <left style="thin"><color rgb="FFCBD5E1"/></left>
+      <right style="thin"><color rgb="FFCBD5E1"/></right>
+      <top style="thin"><color rgb="FFCBD5E1"/></top>
+      <bottom style="thin"><color rgb="FFCBD5E1"/></bottom>
     </border>
   </borders>
   <cellStyleXfs count="1">
@@ -94,15 +95,15 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
 </styleSheet>"""
         zf.writestr('xl/styles.xml', styles)
 
-        # xl/worksheets/sheet1.xml
+        # 6. xl/worksheets/sheet1.xml
         sheet_rows = []
-        
+
         # Header row (row 1)
         r_idx = 1
         h_cells = []
         for c_idx, h in enumerate(headers, 1):
             col_letter = get_col_letter(c_idx)
-            val = saxutils.escape(str(h) if h is not None else "")
+            val = saxutils.escape(str(h))
             h_cells.append(f'<c r="{col_letter}{r_idx}" t="inlineStr" s="1"><is><t>{val}</t></is></c>')
         sheet_rows.append(f'<row r="{r_idx}">{"".join(h_cells)}</row>')
 
@@ -113,7 +114,7 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
             for c_idx, val in enumerate(row, 1):
                 col_letter = get_col_letter(c_idx)
                 if val is None or val == "":
-                    continue
+                    d_cells.append(f'<c r="{col_letter}{r_idx}" s="0"/>')
                 elif isinstance(val, (int, float)):
                     d_cells.append(f'<c r="{col_letter}{r_idx}" s="0"><v>{val}</v></c>')
                 else:
@@ -131,3 +132,42 @@ def create_xlsx(sheet_name: str, headers: list, rows: list) -> bytes:
 
     output.seek(0)
     return output.getvalue()
+
+
+def export_to_excel(table_name: str, rows: list) -> bytes:
+    """
+    Export table rows (list of dict or list of list) to valid Excel (.xlsx) bytes.
+    Uses openpyxl if available, otherwise pure Python create_xlsx.
+    """
+    if not rows:
+        return create_xlsx(table_name or "Sheet1", ["Không có dữ liệu"], [])
+
+    # If openpyxl is installed, use it; otherwise fallback to create_xlsx
+    try:
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = (table_name[:31] if table_name else "Sheet1")
+
+        if isinstance(rows[0], dict):
+            headers = list(rows[0].keys())
+            ws.append(headers)
+            for r in rows:
+                ws.append([r.get(h) for h in headers])
+        else:
+            for r in rows:
+                ws.append(list(r))
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+    except Exception:
+        # Pure Python fallback
+        if isinstance(rows[0], dict):
+            headers = list(rows[0].keys())
+            data_rows = [[r.get(h) for h in headers] for r in rows]
+        else:
+            headers = [f"Col {i + 1}" for i in range(len(rows[0]))]
+            data_rows = rows
+        return create_xlsx(table_name, headers, data_rows)

@@ -33,15 +33,15 @@
           <span class="shortcut-kbd">F9</span>
         </a>
         <a class="menu-item" data-view="orders">
-          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-          <span>Hóa đơn / Đơn bán</span>
+          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          <span>Hóa đơn & Đơn hàng</span>
         </a>
         <a class="menu-item" data-view="returns">
           <svg class="menu-svg" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
           <span>Khách trả hàng</span>
         </a>
         <a class="menu-item" data-view="promotions">
-          <svg class="menu-svg" viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg>
+          <svg class="menu-svg" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
           <span>Khuyến mãi</span>
         </a>
 
@@ -145,7 +145,7 @@
             <!-- Left: Products Catalog & Search -->
             <div class="pos-products-panel">
               <div class="pos-search-bar">
-                <input type="text" id="pos-search-input" class="form-control" placeholder="Tìm tên sản phẩm, SKU hoặc quét mã vạch (F2: Tìm, F4: Khách, F8: Thanh toán)..." autofocus>
+                <input type="text" id="pos-search-input" class="form-control" placeholder="Tìm tên sản phẩm, mã SKU hoặc quét mã vạch (Enter)..." autofocus>
               </div>
               <div class="pos-categories" id="pos-categories-container"></div>
               <div class="pos-products-grid" id="pos-products-grid"></div>
@@ -153,9 +153,6 @@
 
             <!-- Right: Cart & Checkout Panel -->
             <div class="pos-cart-panel">
-              <!-- Multi-Cart Tabs Bar -->
-              <div class="pos-cart-tabs-bar" id="pos-cart-tabs-bar"></div>
-
               <!-- Customer Bar -->
               <div class="pos-customer-bar">
                 <div style="flex: 1;">
@@ -175,17 +172,7 @@
                   <span id="pos-subtotal" style="font-weight: 700;">0 đ</span>
                 </div>
                 <div class="summary-row" style="align-items: center;">
-                  <span>Khuyến mãi:</span>
-                  <select id="pos-promotion-select" class="form-control" style="width: 175px; padding: 3px 6px; font-size: 0.8125rem;" onchange="POS.onPromotionChange()">
-                    <option value="">-- Không áp dụng --</option>
-                  </select>
-                </div>
-                <div class="summary-row" id="pos-promo-discount-row" style="display: none; color: var(--color-success);">
-                  <span>Giảm giá KM:</span>
-                  <span id="pos-promo-discount-val">-0 đ</span>
-                </div>
-                <div class="summary-row" style="align-items: center;">
-                  <span>Chiết khấu thêm:</span>
+                  <span>Chiết khấu (VNĐ):</span>
                   <input type="number" id="pos-discount-input" class="form-control" style="width: 120px; text-align: right; padding: 4px 8px;" value="0" min="0">
                 </div>
                 <div class="summary-row" style="align-items: center;">
@@ -197,6 +184,18 @@
                       <option value="10">10%</option>
                     </select>
                     <span id="pos-vat-amount" style="font-size: 0.8rem; color: #64748b; min-width: 65px; text-align: right;">0 đ</span>
+                  </div>
+                </div>
+                <div class="summary-row" style="align-items: center;">
+                  <span>Khuyến mãi:</span>
+                  <select id="pos-promo-select" class="form-control" style="width: 175px; padding: 4px 6px; font-size: 0.8rem;" onchange="POS.applyPromotion(this.value)">
+                    <option value="">-- Chọn khuyến mãi --</option>
+                  </select>
+                </div>
+                <div id="pos-promo-banner" style="display: none; margin: 8px 0; padding: 8px 12px; background: #eff6ff; border: 1px solid #93c5fd; border-radius: 6px; font-size: 0.82rem; color: #1e40af;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>🎉 <strong>Khuyến mãi:</strong> <span id="pos-promo-banner-name">---</span></div>
+                    <div style="font-weight: 700; color: #1d4ed8;">-<span id="pos-promo-banner-discount">0 đ</span></div>
                   </div>
                 </div>
                 <div class="summary-row total">
@@ -221,17 +220,12 @@
                   <span id="pos-balance-amount" style="color: var(--color-success); font-weight: 800;">0 đ</span>
                 </div>
 
-                <!-- Order Notes -->
-                <div style="margin: 8px 0 4px 0;">
-                  <textarea id="pos-order-notes" class="form-control" rows="2" placeholder="Ghi chú đơn hàng (VD: giao trước 5h, gọi trước khi đến)..." style="font-size: 0.8125rem; resize: none;"></textarea>
-                </div>
-
-                <div style="display: flex; gap: 8px; margin-top: 8px;">
-                  <button id="pos-btn-pending" class="btn btn-outline" style="flex: 1; padding: 10px 4px; font-weight: 600; font-size: 0.8125rem;" onclick="POS.checkout(true)" title="Lưu đơn đang chờ (F6)">
-                    Lưu đơn đặt (F6)
+                <div style="display: flex; gap: 8px; margin-top: 6px;">
+                  <button class="btn-checkout" onclick="POS.checkout(false)" style="flex: 2;">
+                    Thanh Toán & In Hóa Đơn
                   </button>
-                  <button id="pos-btn-checkout" class="btn-checkout" style="flex: 2; margin-top: 0;" onclick="POS.checkout(false)" title="Thanh toán & In hóa đơn (F8)">
-                    Thanh Toán & In (F8)
+                  <button class="btn btn-outline" onclick="POS.checkout(true)" style="flex: 1; border-color: var(--color-warning); color: var(--color-warning-text); font-weight: 700; background: var(--color-surface);" title="Lưu thành đơn đặt hàng (chưa xuất kho)">
+                    Lưu Đặt Hàng
                   </button>
                 </div>
               </div>
@@ -239,40 +233,40 @@
           </div>
         </section>
 
-        <!-- 2b. ORDERS MANAGEMENT VIEW -->
+        <!-- 3. INVOICES & ORDERS VIEW (HÓA ĐƠN & ĐƠN HÀNG) -->
         <section id="view-orders" class="view-section" style="display: none;"></section>
 
-        <!-- 2c. PROMOTIONS VIEW -->
-        <section id="view-promotions" class="view-section" style="display: none;"></section>
-
-        <!-- 3. PRODUCTS & INVENTORY VIEW -->
+        <!-- 4. PRODUCTS & INVENTORY VIEW -->
         <section id="view-products" class="view-section" style="display: none;"></section>
 
-        <!-- 4. PURCHASES VIEW -->
+        <!-- 5. PURCHASES VIEW -->
         <section id="view-purchases" class="view-section" style="display: none;"></section>
 
-        <!-- 5. CUSTOMERS VIEW -->
+        <!-- 6. CUSTOMERS VIEW -->
         <section id="view-customers" class="view-section" style="display: none;"></section>
 
-        <!-- 6. SUPPLIERS VIEW -->
+        <!-- 7. SUPPLIERS VIEW -->
         <section id="view-suppliers" class="view-section" style="display: none;"></section>
 
-        <!-- 7. SALES RETURNS VIEW -->
+        <!-- 8. SALES RETURNS VIEW -->
         <section id="view-returns" class="view-section" style="display: none;"></section>
 
-        <!-- 8. CASH FLOW VIEW -->
+        <!-- 9. PROMOTIONS VIEW (KHUYẾN MÃI) -->
+        <section id="view-promotions" class="view-section" style="display: none;"></section>
+
+        <!-- 10. CASH FLOW VIEW -->
         <section id="view-cash-flow" class="view-section" style="display: none;"></section>
 
-        <!-- 9. REPORTS VIEW -->
+        <!-- 11. REPORTS VIEW -->
         <section id="view-reports" class="view-section" style="display: none;"></section>
 
-        <!-- 10. SETTINGS VIEW -->
+        <!-- 12. SETTINGS VIEW -->
         <section id="view-settings" class="view-section" style="display: none;"></section>
 
-        <!-- 11. AUDIT TRAIL VIEW -->
+        <!-- 13. AUDIT TRAIL VIEW -->
         <section id="view-audit" class="view-section" style="display: none;"></section>
 
-        <!-- 12. USERS & RBAC VIEW -->
+        <!-- 14. USERS & RBAC VIEW -->
         <section id="view-users" class="view-section" style="display: none;"></section>
       </main>
     </div>
@@ -289,6 +283,8 @@
       </div>
       <div class="modal-body">
         <input type="hidden" id="prod-id">
+        <input type="hidden" id="prod-sub-unit">
+        <input type="hidden" id="prod-sub-unit-ratio" value="1">
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Mã SKU (tự động nếu để trống):</label>
@@ -310,19 +306,36 @@
           </div>
           <div class="form-group">
             <label class="form-label">Đơn vị cơ bản (*):</label>
-            <input type="text" id="prod-unit" class="form-control" placeholder="Thùng, Hộp, Chai, Cái, Kg...">
+            <input type="text" id="prod-unit" class="form-control" placeholder="Lon, Gói, Chai, Cái, Kg..." oninput="App.syncBaseUnitName(this.value)">
           </div>
         </div>
-        <!-- Packaging Sub-unit -->
-        <div class="form-row" style="background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px dashed var(--color-border-strong); margin-bottom: 14px;">
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Đơn vị quy đổi phụ (nếu có):</label>
-            <input type="text" id="prod-sub-unit" class="form-control" placeholder="Ví dụ: Lon, Gói, Hộp nhỏ">
+
+        <!-- Multi-tier Packaging Units (Quy đổi nhiều đơn vị: Thùng -> Lốc -> Lon) -->
+        <div style="background: var(--color-surface-muted); padding: 12px; border-radius: var(--radius-md); border: 1px dashed var(--color-border-strong); margin-bottom: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" style="margin-bottom: 0; font-weight: 700; color: var(--color-primary); display: flex; align-items: center; gap: 6px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/></svg>
+              Đơn vị quy đổi (Ví dụ: 1 Thùng = 6 Lốc = 36 Lon)
+            </label>
+            <button type="button" class="btn btn-sm btn-outline" onclick="App.addUnitRow()">+ Thêm đơn vị quy đổi</button>
           </div>
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Hệ số quy đổi (1 ĐV chính = ? ĐV phụ):</label>
-            <input type="number" id="prod-sub-unit-ratio" class="form-control" value="1" min="1">
-          </div>
+          <table class="unit-row-table">
+            <thead>
+              <tr>
+                <th>Tên đơn vị</th>
+                <th>Giá trị quy đổi (= bao nhiêu ĐV cơ bản)</th>
+                <th>Giá bán</th>
+                <th>Mã vạch riêng (nếu có)</th>
+                <th style="width: 36px; text-align: center;">Xóa</th>
+              </tr>
+            </thead>
+            <tbody id="product-units-tbody">
+              <!-- Dynamically populated rows -->
+            </tbody>
+          </table>
+          <small style="color: var(--color-text-subtle); display: block; margin-top: 6px; font-size: 0.74rem;">
+            Hệ thống hỗ trợ số thập phân và tự động phân rã hiển thị tồn kho chi tiết (ví dụ: 10 thùng 3 lốc 5 lon).
+          </small>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -412,6 +425,74 @@
     </div>
   </div>
 
+  <!-- Customer Detail Modal (Order Summary & History) -->
+  <div class="modal-overlay" id="customer-detail-modal">
+    <div class="modal-dialog" style="max-width: 650px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="cdm-name">Thông tin khách hàng</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;" id="cdm-code">Mã KH</div>
+        </div>
+        <button class="modal-close" data-close-modal="customer-detail-modal">✕</button>
+      </div>
+      <div class="modal-body" style="max-height: 75vh; overflow-y: auto;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; background: var(--color-surface-muted); padding: 12px; border-radius: var(--radius-md);">
+          <div>
+            <div style="font-size: 0.75rem; color: var(--color-text-secondary);">Số điện thoại:</div>
+            <div style="font-weight: 600;" id="cdm-phone">---</div>
+          </div>
+          <div>
+            <div style="font-size: 0.75rem; color: var(--color-text-secondary);">Nhóm khách:</div>
+            <div style="font-weight: 600;" id="cdm-group">---</div>
+          </div>
+          <div>
+            <div style="font-size: 0.75rem; color: var(--color-text-secondary);">Địa chỉ:</div>
+            <div style="font-weight: 600;" id="cdm-address">---</div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;">
+          <div class="stat-card" style="padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); text-align: center;">
+            <div style="font-size: 0.75rem; color: var(--color-text-secondary);">Tổng số đơn hàng</div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: var(--color-primary); margin-top: 4px;" id="cdm-order-count">0</div>
+          </div>
+          <div class="stat-card" style="padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); text-align: center;">
+            <div style="font-size: 0.75rem; color: var(--color-text-secondary);">Tổng tiền mua</div>
+            <div style="font-size: 1.1rem; font-weight: 800; color: var(--color-success); margin-top: 6px;" id="cdm-total-spent">0 đ</div>
+          </div>
+          <div class="stat-card" style="padding: 12px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); text-align: center;">
+            <div style="font-size: 0.75rem; color: var(--color-text-secondary);">Công nợ hiện tại</div>
+            <div style="font-size: 1.1rem; font-weight: 800; color: var(--color-danger); margin-top: 6px;" id="cdm-debt">0 đ</div>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <div style="font-weight: 600;">Lịch sử đơn hàng gần đây:</div>
+          <button class="btn btn-sm btn-outline" id="cdm-view-all-orders-btn">Xem tất cả hóa đơn</button>
+        </div>
+        <div class="table-responsive">
+          <table class="table" style="font-size: 0.85rem;">
+            <thead>
+              <tr>
+                <th>Mã đơn</th>
+                <th>Thời gian</th>
+                <th class="text-right">Tổng tiền</th>
+                <th class="text-center">Trạng thái</th>
+                <th class="text-right">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="cdm-recent-orders-body">
+              <tr><td colspan="5" class="empty-state">Đang tải lịch sử đơn hàng...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="customer-detail-modal">Đóng</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 3. Customer-Specific Pricing Modal -->
   <div class="modal-overlay" id="customer-pricing-modal">
     <div class="modal-dialog modal-dialog-lg">
@@ -490,10 +571,14 @@
             <option value="bank">Chuyển khoản ngân hàng</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <input type="text" id="debt-notes" class="form-control" placeholder="Thu nợ khách hàng (tùy chọn)">
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="cust-debt-modal">Hủy</button>
-        <button class="btn btn-success" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ</button>
+        <button class="btn btn-success" id="btn-confirm-collect-debt" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ</button>
       </div>
     </div>
   </div>
@@ -502,7 +587,7 @@
   <div class="modal-overlay" id="supplier-modal">
     <div class="modal-dialog">
       <div class="modal-header">
-        <h3 class="modal-title">Thêm Nhà cung cấp</h3>
+        <h3 class="modal-title" id="supp-modal-title">Thêm Nhà cung cấp</h3>
         <button class="modal-close" data-close-modal="supplier-modal">✕</button>
       </div>
       <div class="modal-body">
@@ -567,10 +652,14 @@
             <option value="cash">Tiền mặt</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <input type="text" id="debt-supp-notes" class="form-control" placeholder="Trả nợ nhà cung cấp (tùy chọn)">
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="supp-debt-modal">Hủy</button>
-        <button class="btn btn-primary" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả</button>
+        <button class="btn btn-primary" id="btn-confirm-pay-supp-debt" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả</button>
       </div>
     </div>
   </div>
@@ -598,8 +687,9 @@
           </div>
         </div>
 
-        <div style="background: var(--color-surface-muted); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: 14px; display: flex; gap: 8px; align-items: center; border: 1px solid var(--color-border);">
-          <button class="btn btn-sm btn-primary" onclick="App.promptAddProductToPurchase()">+ Thêm sản phẩm nhập kho</button>
+        <div style="background: var(--color-surface-muted); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: 14px; display: flex; gap: 8px; align-items: center; border: 1px solid var(--color-border); flex-wrap: wrap;">
+          <select id="purch-prod-select" class="form-control" style="flex: 1; min-width: 240px;"></select>
+          <button class="btn btn-sm btn-primary" onclick="App.addSelectedProductToPurchase()">+ Thêm vào phiếu</button>
           <button class="btn btn-sm btn-outline" onclick="App.openCreateProductModal()">+ Tạo hàng hóa mới</button>
         </div>
 
@@ -657,9 +747,13 @@
         </div>
         <div class="form-group">
           <label class="form-label">Sản phẩm trả lại (*):</label>
-          <select id="ret-product-select" class="form-control"></select>
+          <select id="ret-product-select" class="form-control" onchange="App.onReturnProductChange()"></select>
         </div>
         <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Đơn vị trả hàng:</label>
+            <select id="ret-unit-select" class="form-control" onchange="App.onReturnUnitChange()"></select>
+          </div>
           <div class="form-group">
             <label class="form-label">Số lượng trả lại:</label>
             <input type="number" id="ret-qty" class="form-control" value="1" min="1">
@@ -746,6 +840,7 @@
         <div style="margin-bottom: 14px; background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px solid var(--color-border);">
           Sản phẩm: <strong id="adjust-product-name"></strong><br>
           Tồn kho trên hệ thống: <span id="adjust-current-stock" style="font-weight: 700; color: var(--color-primary);"></span>
+          <div id="adjust-stock-breakdown" style="margin-top: 6px;"></div>
         </div>
         <div class="form-group">
           <label class="form-label">Số lượng thực tế kiểm đếm:</label>
@@ -1053,246 +1148,272 @@
     </div>
   </div>
 
-  <!-- 19. Order Detail Modal -->
-  <div class="modal-overlay" id="modal-order-detail">
-    <div class="modal-dialog" style="max-width: 800px;">
-      <div class="modal-header">
-        <div>
-          <h3 class="modal-title" id="od-title">Chi tiết hóa đơn</h3>
-          <div id="od-subtitle" style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;"></div>
-        </div>
-        <button class="modal-close" data-close-modal="modal-order-detail">✕</button>
-      </div>
-      <div class="modal-body" style="max-height: 75vh; overflow-y: auto; padding: 16px 20px;" id="od-body-content">
-        <!-- Rendered dynamically via App.renderOrderDetail() -->
-      </div>
-      <div class="modal-footer" id="od-footer-actions">
-        <!-- Buttons added dynamically based on order status & permissions -->
-      </div>
-    </div>
-  </div>
-
-  <!-- 20. Order Cancellation Modal -->
-  <div class="modal-overlay" id="modal-order-cancel">
-    <div class="modal-dialog" style="max-width: 450px;">
-      <div class="modal-header">
-        <h3 class="modal-title" style="color: var(--color-danger-text);">Hủy hóa đơn bán hàng</h3>
-        <button class="modal-close" data-close-modal="modal-order-cancel">✕</button>
-      </div>
-      <div class="modal-body">
-        <div style="font-size: 0.875rem; margin-bottom: 12px; color: var(--color-text);">
-          Bạn có chắc chắn muốn hủy đơn hàng <strong id="cancel-order-code"></strong> không?
-        </div>
-        <div class="alert alert-warning" style="font-size: 0.8125rem; margin-bottom: 14px;">
-          Lưu ý: Hủy hóa đơn đã hoàn tất sẽ tự động <strong>hoàn trả số lượng tồn kho</strong>, <strong>giảm công nợ</strong> và <strong>ghi nhận bút toán đảo chi quỹ</strong> nếu đã thu tiền.
-        </div>
-        <div class="form-group">
-          <label class="form-label">Lý do hủy (*):</label>
-          <textarea id="cancel-order-reason" class="form-control" rows="3" placeholder="Nhập lý do hủy hóa đơn..." required></textarea>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline" data-close-modal="modal-order-cancel">Đóng</button>
-        <button type="button" class="btn btn-danger" onclick="App.confirmCancelOrder()">Xác nhận Hủy Đơn</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 21. Customer Pending Orders Modal -->
-  <div class="modal-overlay" id="modal-customer-pending">
-    <div class="modal-dialog" style="max-width: 650px;">
-      <div class="modal-header">
-        <div>
-          <h3 class="modal-title" id="cust-pending-title">Đơn hàng đang đặt / chờ xử lý</h3>
-          <div id="cust-pending-subtitle" style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;"></div>
-        </div>
-        <button class="modal-close" data-close-modal="modal-customer-pending">✕</button>
-      </div>
-      <div class="modal-body" style="max-height: 60vh; overflow-y: auto;" id="cust-pending-list-container">
-        <!-- Rendered dynamically -->
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-primary" data-close-modal="modal-customer-pending">Đóng</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 22. Product Packaging Units Modal -->
-  <div class="modal-overlay" id="modal-product-units">
+  <!-- 19. Order Detail Modal (Chi tiết hóa đơn & Đơn hàng) -->
+  <div class="modal-overlay" id="order-detail-modal">
     <div class="modal-dialog" style="max-width: 750px;">
       <div class="modal-header">
         <div>
-          <h3 class="modal-title" id="pu-modal-title">Quy đổi đơn vị tính & đóng gói</h3>
-          <div id="pu-modal-subtitle" style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;"></div>
+          <h3 class="modal-title" id="od-title">Chi tiết hóa đơn</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;" id="od-subtitle">Mã chứng từ & thông tin giao dịch</div>
         </div>
-        <button class="modal-close" data-close-modal="modal-product-units">✕</button>
+        <button class="modal-close" data-close-modal="order-detail-modal">✕</button>
       </div>
-      <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
-        <!-- Existing Units Table -->
-        <div style="margin-bottom: 20px;">
-          <h4 style="font-size: 0.875rem; font-weight: 600; margin-bottom: 8px;">Danh sách đơn vị đã cấu hình</h4>
-          <div class="table-container">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Đơn vị</th>
-                  <th>Hệ số quy đổi cơ sở</th>
-                  <th>Giá bán</th>
-                  <th>Mã vạch riêng</th>
-                  <th>Loại</th>
-                  <th style="width: 70px;">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody id="pu-table-body">
-                <!-- Dynamic rows -->
-              </tbody>
-            </table>
+      <div class="modal-body" style="max-height: 75vh; overflow-y: auto;" id="od-body">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; gap: 8px;" id="od-footer">
+        <!-- Action buttons rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Invoice Detail Modal (CRUD + Duplicate) -->
+  <div class="modal-overlay" id="invoice-detail-modal">
+    <div class="modal-dialog" style="max-width: 800px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="inv-modal-title">Chi tiết hóa đơn</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;" id="inv-modal-subtitle">Thông tin hóa đơn & các mặt hàng</div>
+        </div>
+        <button class="modal-close" data-close-modal="invoice-detail-modal">✕</button>
+      </div>
+      <div class="modal-body" style="max-height: 75vh; overflow-y: auto;">
+        <input type="hidden" id="inv-modal-id">
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; background: var(--color-surface-muted); padding: 12px; border-radius: var(--radius-md);">
+          <div>
+            <label class="form-label" style="font-size: 0.75rem;">Mã hóa đơn:</label>
+            <input type="text" id="inv-modal-code" class="form-control" readonly>
+          </div>
+          <div>
+            <label class="form-label" style="font-size: 0.75rem;">Khách hàng:</label>
+            <input type="text" id="inv-modal-customer" class="form-control" readonly>
+          </div>
+          <div>
+            <label class="form-label" style="font-size: 0.75rem;">Ngày tạo:</label>
+            <input type="text" id="inv-modal-date" class="form-control" readonly>
+          </div>
+          <div>
+            <label class="form-label" style="font-size: 0.75rem;">Trạng thái:</label>
+            <select id="inv-modal-status" class="form-control" disabled>
+              <option value="completed">Đã hoàn thành</option>
+              <option value="ordered">Khách đang đặt</option>
+              <option value="draft">Bản nháp</option>
+              <option value="cancelled">Đã hủy</option>
+            </select>
           </div>
         </div>
 
-        <!-- Add / Edit Unit Form -->
-        <div style="background: var(--color-surface-subtle); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 14px;">
-          <h4 style="font-size: 0.875rem; font-weight: 600; margin-bottom: 10px;" id="pu-form-title">Thêm đơn vị đóng gói mới</h4>
-          <form onsubmit="App.saveProductUnit(event)">
-            <input type="hidden" id="pu-product-id">
-            <input type="hidden" id="pu-unit-id">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
-              <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Tên đơn vị (* VD: Lốc, Thùng, Bao):</label>
-                <input type="text" id="pu-name" class="form-control" required placeholder="VD: Thùng">
-              </div>
-              <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Hệ số quy đổi về đơn vị cơ sở (* >0):</label>
-                <input type="number" id="pu-rate" class="form-control" step="any" min="0.0001" required placeholder="VD: 24">
-                <small style="color: var(--color-text-muted); font-size: 0.72rem;">1 đơn vị này = bao nhiêu đơn vị cơ sở</small>
-              </div>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
-              <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Giá bán riêng (VNĐ - Tùy chọn):</label>
-                <input type="number" id="pu-price" class="form-control" min="0" placeholder="Để trống để tự tính">
-              </div>
-              <div class="form-group" style="margin-bottom: 0;">
-                <label class="form-label">Mã vạch riêng (Tùy chọn):</label>
-                <input type="text" id="pu-barcode" class="form-control" placeholder="Quét hoặc nhập mã vạch">
-              </div>
-            </div>
-            <div style="display: flex; justify-content: flex-end; gap: 8px;">
-              <button type="button" class="btn btn-outline btn-sm" onclick="App.resetProductUnitForm()">Làm mới form</button>
-              <button type="submit" class="btn btn-primary btn-sm">Lưu đơn vị</button>
-            </div>
-          </form>
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label" style="font-size: 0.75rem;">Ghi chú:</label>
+          <textarea id="inv-modal-notes" class="form-control" rows="2" readonly placeholder="Ghi chú hóa đơn..."></textarea>
+        </div>
+
+        <div style="font-weight: 600; margin-bottom: 8px;">Danh sách mặt hàng:</div>
+        <div class="table-responsive" style="margin-bottom: 16px;">
+          <table class="table" style="font-size: 0.85rem;">
+            <thead>
+              <tr>
+                <th>Sản phẩm</th>
+                <th class="text-center">ĐVT</th>
+                <th class="text-center">Số lượng</th>
+                <th class="text-right">Đơn giá</th>
+                <th class="text-right">Thành tiền</th>
+              </tr>
+            </thead>
+            <tbody id="inv-modal-items-body">
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 12px; line-height: 1.8;">
+          <div style="display: flex; justify-content: space-between;">
+            <span>Tổng tiền hàng:</span>
+            <span id="inv-modal-total" class="tabular-nums font-bold">0 đ</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; color: var(--color-danger);">
+            <span>Giảm giá / Chiết khấu:</span>
+            <span id="inv-modal-discount" class="tabular-nums font-bold">0 đ</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span>Thuế VAT:</span>
+            <span id="inv-modal-vat" class="tabular-nums">0 đ</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 1.05rem; font-weight: 800; border-top: 1px dashed var(--color-border); padding-top: 6px; margin-top: 6px;">
+            <span>TỔNG CỘNG:</span>
+            <span id="inv-modal-final" class="tabular-nums" style="color: var(--color-primary);">0 đ</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span>Đã thanh toán:</span>
+            <span id="inv-modal-paid" class="tabular-nums font-bold" style="color: var(--color-success);">0 đ</span>
+          </div>
+          <div style="display: flex; justify-content: space-between;">
+            <span>Còn nợ:</span>
+            <span id="inv-modal-debt" class="tabular-nums font-bold" style="color: var(--color-danger);">0 đ</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; gap: 8px;">
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-outline" id="inv-btn-duplicate" onclick="App.duplicateInvoiceModal()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+            Nhân bản
+          </button>
+          <button class="btn btn-outline text-danger" id="inv-btn-delete" style="color: var(--color-danger);" onclick="App.deleteInvoiceModal()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Xóa hóa đơn
+          </button>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-outline" id="inv-btn-edit" onclick="App.toggleEditInvoiceModal()">Sửa</button>
+          <button class="btn btn-primary" id="inv-btn-save" style="display: none;" onclick="App.saveInvoiceModal()">Lưu</button>
+          <button class="btn btn-outline" data-close-modal="invoice-detail-modal">Đóng</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 20. Order Adjust Modal (Điều chỉnh đơn hàng) -->
+  <div class="modal-overlay" id="order-adjust-modal">
+    <div class="modal-dialog" style="max-width: 500px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="oa-title">Điều chỉnh hóa đơn / đơn hàng</h3>
+        <button class="modal-close" data-close-modal="order-adjust-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="oa-order-id">
+        <div class="form-group">
+          <label class="form-label">Mã chứng từ:</label>
+          <input type="text" id="oa-code" class="form-control" readonly>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tên khách hàng:</label>
+          <input type="text" id="oa-customer-name" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Trạng thái:</label>
+          <select id="oa-status" class="form-control">
+            <option value="completed">Đã hoàn thành (Xuất kho & Hoàn tất)</option>
+            <option value="ordered">Khách đang đặt (Đơn đặt hàng)</option>
+            <option value="cancelled">Đã hủy</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú điều chỉnh:</label>
+          <textarea id="oa-notes" class="form-control" rows="3" placeholder="Nhập lý do hoặc nội dung điều chỉnh..."></textarea>
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-primary" data-close-modal="modal-product-units">Hoàn tất</button>
+        <button class="btn btn-outline" data-close-modal="order-adjust-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.saveOrderAdjustment()">Lưu điều chỉnh</button>
       </div>
     </div>
   </div>
 
-  <!-- 23. Promotion Modal -->
-  <div class="modal-overlay" id="modal-promotion">
-    <div class="modal-dialog" style="max-width: 580px;">
+  <!-- 21. Promotion Modal (Tạo / Sửa chương trình khuyến mãi) -->
+  <div class="modal-overlay" id="promotion-modal">
+    <div class="modal-dialog" style="max-width: 600px;">
       <div class="modal-header">
         <h3 class="modal-title" id="promo-modal-title">Chương trình khuyến mãi</h3>
-        <button class="modal-close" data-close-modal="modal-promotion">✕</button>
+        <button class="modal-close" data-close-modal="promotion-modal">✕</button>
       </div>
       <div class="modal-body">
-        <form onsubmit="App.savePromotion(event)">
-          <input type="hidden" id="promo-id">
+        <input type="hidden" id="promo-id">
+        <div class="form-row">
           <div class="form-group">
-            <label class="form-label">Tên chương trình (*):</label>
-            <input type="text" id="promo-name" class="form-control" required placeholder="VD: Khai trương - Giảm 5% đơn từ 200k">
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="form-group">
-              <label class="form-label">Ngày bắt đầu (*):</label>
-              <input type="date" id="promo-start" class="form-control" required>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Ngày kết thúc (*):</label>
-              <input type="date" id="promo-end" class="form-control" required>
-            </div>
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="form-group">
-              <label class="form-label">Phạm vi áp dụng:</label>
-              <select id="promo-scope" class="form-control" onchange="App.onPromoScopeChange()">
-                <option value="order">Toàn đơn hàng</option>
-                <option value="category">Theo danh mục sản phẩm</option>
-                <option value="product">Theo sản phẩm cụ thể</option>
-              </select>
-            </div>
-            <div class="form-group" id="promo-scope-target-grp" style="display: none;">
-              <label class="form-label" id="promo-scope-target-lbl">Đối tượng:</label>
-              <div id="promo-scope-target-container"></div>
-            </div>
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="form-group">
-              <label class="form-label">Loại giảm giá:</label>
-              <select id="promo-type" class="form-control">
-                <option value="percent">Phần trăm (%)</option>
-                <option value="fixed">Số tiền cố định (VNĐ)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Giá trị giảm (*):</label>
-              <input type="number" id="promo-value" class="form-control" step="any" min="0" required placeholder="VD: 5 hoặc 20000">
-            </div>
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="form-group">
-              <label class="form-label">Giá trị đơn tối thiểu (VNĐ):</label>
-              <input type="number" id="promo-min-amount" class="form-control" min="0" value="0">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Nhóm khách áp dụng:</label>
-              <select id="promo-customer-group" class="form-control">
-                <option value="all">Tất cả khách hàng</option>
-                <option value="Khách lẻ">Khách lẻ tại quầy</option>
-                <option value="Đại lý cấp 1">Đại lý cấp 1</option>
-                <option value="Bán buôn">Bán buôn</option>
-                <option value="VIP">VIP</option>
-              </select>
-            </div>
+            <label class="form-label">Mã khuyến mãi (tự động):</label>
+            <input type="text" id="promo-code" class="form-control" placeholder="KM0001">
           </div>
           <div class="form-group">
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-              <input type="checkbox" id="promo-is-active" checked>
-              <span>Kích hoạt áp dụng chương trình này</span>
-            </label>
+            <label class="form-label">Loại khuyến mãi (*):</label>
+            <select id="promo-type" class="form-control" onchange="App.onPromoTypeChange(this.value)">
+              <option value="order_discount_percent">Giảm % theo tổng đơn hàng</option>
+              <option value="order_discount_amount">Giảm tiền mặt theo tổng đơn hàng</option>
+              <option value="buy_x_get_y">Mua hàng tặng hàng (Mua X tặng Y)</option>
+            </select>
           </div>
-          <div class="modal-footer" style="padding: 14px 0 0; margin-top: 14px; border-top: 1px solid var(--color-border);">
-            <button type="button" class="btn btn-outline" data-close-modal="modal-promotion">Hủy</button>
-            <button type="submit" class="btn btn-primary">Lưu chương trình</button>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tên chương trình khuyến mãi (*):</label>
+          <input type="text" id="promo-name" class="form-control" placeholder="Ví dụ: Giảm 10% đơn từ 500k, Tri ân khách hàng...">
+        </div>
+        <div class="form-row" id="promo-discount-row">
+          <div class="form-group">
+            <label class="form-label" id="promo-val-label">Mức giảm (% hoặc VNĐ) (*):</label>
+            <input type="number" id="promo-val" class="form-control" value="0" min="0">
           </div>
-        </form>
+          <div class="form-group">
+            <label class="form-label">Đơn hàng tối thiểu (VNĐ):</label>
+            <input type="number" id="promo-min-order" class="form-control" value="0" min="0">
+          </div>
+        </div>
+        <!-- Buy X Get Y Row -->
+        <div class="form-row" id="promo-gift-row" style="display: none; background: var(--color-surface-muted); padding: 10px; border-radius: var(--radius-md); border: 1px dashed var(--color-border-strong); margin-bottom: 14px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Số lượng mua (X):</label>
+            <input type="number" id="promo-buy-qty" class="form-control" value="1" min="1">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Số lượng tặng (Y):</label>
+            <input type="number" id="promo-gift-qty" class="form-control" value="1" min="1">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Từ ngày:</label>
+            <input type="date" id="promo-start-date" class="form-control">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Đến ngày:</label>
+            <input type="date" id="promo-end-date" class="form-control">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú điều kiện áp dụng:</label>
+          <input type="text" id="promo-notes" class="form-control" placeholder="Áp dụng tại quầy POS hoặc cho mọi đơn...">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" data-close-modal="promotion-modal">Hủy</button>
+        <button class="btn btn-primary" onclick="App.savePromotionForm()">Lưu chương trình KM</button>
       </div>
     </div>
   </div>
 
-  <!-- 24. Column Visibility & Export Selector Modal -->
-  <div class="modal-overlay" id="modal-column-selector">
-    <div class="modal-dialog" style="max-width: 440px;">
+  <!-- 22. Purchase Detail Modal (Chi tiết phiếu nhập hàng) -->
+  <div class="modal-overlay" id="purchase-detail-modal">
+    <div class="modal-dialog" style="max-width: 750px;">
       <div class="modal-header">
-        <h3 class="modal-title" id="cs-title">Tùy chỉnh cột hiển thị & Xuất Excel</h3>
-        <button class="modal-close" data-close-modal="modal-column-selector">✕</button>
+        <div>
+          <h3 class="modal-title" id="pd-title">Chi tiết phiếu nhập hàng</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;" id="pd-subtitle">Mã chứng từ & thông tin nhập kho</div>
+        </div>
+        <button class="modal-close" data-close-modal="purchase-detail-modal">✕</button>
       </div>
-      <div class="modal-body">
-        <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-bottom: 10px;">
-          Chọn các cột bạn muốn hiển thị trên bảng dữ liệu hoặc xuất file:
-        </div>
-        <div id="cs-checkboxes-container" style="display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto;">
-          <!-- Populated dynamically -->
-        </div>
+      <div class="modal-body" style="max-height: 75vh; overflow-y: auto;" id="pd-body">
+        <!-- Rendered dynamically -->
       </div>
-      <div class="modal-footer" style="display: flex; justify-content: space-between;">
-        <button type="button" class="btn btn-outline btn-sm" onclick="App.selectAllColumns(true)">Chọn tất cả</button>
-        <div style="display: flex; gap: 8px;">
-          <button type="button" class="btn btn-outline btn-sm" data-close-modal="modal-column-selector">Đóng</button>
-          <button type="button" class="btn btn-primary btn-sm" onclick="App.saveColumnSelection()">Áp dụng</button>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; gap: 8px;" id="pd-footer">
+        <!-- Action buttons rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 23. Return Detail Modal (Chi tiết phiếu khách trả hàng) -->
+  <div class="modal-overlay" id="return-detail-modal">
+    <div class="modal-dialog" style="max-width: 750px;">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title" id="rd-title">Chi tiết phiếu trả hàng</h3>
+          <div style="font-size: 0.8125rem; color: var(--color-text-secondary); margin-top: 2px;" id="rd-subtitle">Mã chứng từ & thông tin hoàn hàng / hoàn tiền</div>
         </div>
+        <button class="modal-close" data-close-modal="return-detail-modal">✕</button>
+      </div>
+      <div class="modal-body" style="max-height: 75vh; overflow-y: auto;" id="rd-body">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; gap: 8px;" id="rd-footer">
+        <!-- Action buttons rendered dynamically -->
       </div>
     </div>
   </div>

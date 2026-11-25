@@ -137,7 +137,7 @@ const API = {
 
   // Dashboard & Reports
   getDashboardStats(range = 'today') {
-    return this.request(`/api/reports/dashboard?range=${range}`);
+    return this.request(`/api/reports/dashboard?range=${encodeURIComponent(range)}`);
   },
 
   // Products & Inventory
@@ -199,6 +199,15 @@ const API = {
       body: JSON.stringify(data)
     });
   },
+  collectCustomerDebt(id, data) {
+    return this.request(`/api/customers/${id}/collect-debt`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  getCustomerOrdersCount(customerId) {
+    return this.request(`/api/customers/${customerId}/orders/count`);
+  },
 
   // Customer-Specific Product Pricing
   getCustomerPrices(customerId) {
@@ -243,6 +252,12 @@ const API = {
       body: JSON.stringify(data)
     });
   },
+  collectSupplierDebt(id, data) {
+    return this.request(`/api/suppliers/${id}/collect-debt`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
 
   // Orders / Sales (Output)
   getOrders(params = {}) {
@@ -258,62 +273,40 @@ const API = {
       body: JSON.stringify(data)
     });
   },
-  completeOrder(id, data = {}) {
-    return this.request(`/api/orders/${id}/complete`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
-  },
-  cancelOrder(id, reason = '') {
-    return this.request(`/api/orders/${id}/cancel`, {
-      method: 'POST',
-      body: JSON.stringify({ reason })
-    });
-  },
-  duplicateOrder(id) {
-    return this.request(`/api/orders/${id}/duplicate`, {
-      method: 'POST'
-    });
-  },
   updateOrder(id, data) {
     return this.request(`/api/orders/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data)
     });
   },
-  getCustomerPendingOrders(customerId) {
-    return this.request(`/api/customers/${customerId}/pending-orders`);
+  deleteOrder(id) {
+    return this.request(`/api/orders/${id}`, { method: 'DELETE' });
+  },
+  cloneOrder(id) {
+    return this.request(`/api/orders/${id}/clone`, { method: 'POST' });
   },
 
-  // Multi-level Product Units
-  getProductUnits(productId) {
-    return this.request(`/api/products/${productId}/units`);
+  // Invoices (Hóa đơn - CRUD + Duplicate)
+  getInvoice(id) {
+    return this.request(`/api/invoices/${id}`);
   },
-  saveProductUnit(productId, data) {
-    return this.request(`/api/products/${productId}/units`, {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
-  },
-  updateProductUnit(unitId, data) {
-    return this.request(`/api/product-units/${unitId}`, {
+  updateInvoice(id, data) {
+    return this.request(`/api/invoices/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data)
     });
   },
-  deleteProductUnit(unitId) {
-    return this.request(`/api/product-units/${unitId}`, {
-      method: 'DELETE'
-    });
+  deleteInvoice(id) {
+    return this.request(`/api/invoices/${id}`, { method: 'DELETE' });
+  },
+  duplicateInvoice(id) {
+    return this.request(`/api/invoices/${id}/duplicate`, { method: 'POST' });
   },
 
-  // Promotions
-  getPromotions(params = {}) {
-    const qs = new URLSearchParams(params).toString();
-    return this.request(`/api/promotions${qs ? '?' + qs : ''}`);
-  },
-  getPromotion(id) {
-    return this.request(`/api/promotions/${id}`);
+  // Promotions (Chương trình khuyến mãi)
+  getPromotions(activeOnly = false) {
+    const qs = activeOnly ? '?active_only=1' : '';
+    return this.request(`/api/promotions${qs}`);
   },
   createPromotion(data) {
     return this.request('/api/promotions', {
@@ -328,48 +321,66 @@ const API = {
     });
   },
   deletePromotion(id) {
-    return this.request(`/api/promotions/${id}`, {
-      method: 'DELETE'
-    });
+    return this.request(`/api/promotions/${id}`, { method: 'DELETE' });
   },
-  checkPromotions(data) {
-    return this.request('/api/promotions/check', {
-      method: 'POST',
-      body: JSON.stringify(data)
-    });
+  togglePromotion(id) {
+    return this.request(`/api/promotions/${id}/toggle`, { method: 'POST' });
   },
 
-  // Excel Export (.xlsx)
-  async downloadExport(entity, params = {}) {
-    const qs = new URLSearchParams(params).toString();
-    const url = `/api/export/${entity}${qs ? '?' + qs : ''}`;
+  // Export to Excel (.xlsx)
+  async exportXlsx(payload) {
+    const defaultHeaders = {
+      'Content-Type': 'application/json'
+    };
+    if (this.token) {
+      defaultHeaders['Authorization'] = `Bearer ${this.token}`;
+    }
+    const response = await fetch('/api/export/xlsx', {
+      method: 'POST',
+      headers: defaultHeaders,
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error(`Xuất Excel thất bại (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = payload.filename ? (payload.filename.endsWith('.xlsx') ? payload.filename : payload.filename + '.xlsx') : 'export.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  // Generic Export by Table Name (GET /api/export/<table>)
+  async exportTable(tableName) {
     const defaultHeaders = {};
     if (this.token) {
       defaultHeaders['Authorization'] = `Bearer ${this.token}`;
     }
-    const response = await fetch(url, {
-      credentials: 'same-origin',
+    const response = await fetch(`/api/export/${encodeURIComponent(tableName)}`, {
+      method: 'GET',
       headers: defaultHeaders
     });
     if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      throw new Error(errData.message || `Lỗi xuất file Excel (${response.status})`);
+      let errMsg = `Xuất Excel thất bại (${response.status})`;
+      try {
+        const errData = await response.json();
+        if (errData && errData.message) errMsg = errData.message;
+      } catch (e) {}
+      throw new Error(errMsg);
     }
     const blob = await response.blob();
-    const disposition = response.headers.get('Content-Disposition') || '';
-    let filename = `${entity}.xlsx`;
-    const match = disposition.match(/filename="?([^"]+)"?/);
-    if (match && match[1]) filename = match[1];
-
-    const blobUrl = window.URL.createObjectURL(blob);
+    const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = filename;
+    a.href = url;
+    a.download = `${tableName}.xlsx`;
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(blobUrl);
-    return filename;
+    a.remove();
+    window.URL.revokeObjectURL(url);
   },
 
   // Purchases / Goods Receipt (Input)
@@ -390,6 +401,9 @@ const API = {
   getReturns() {
     return this.request('/api/returns');
   },
+  getReturn(id) {
+    return this.request(`/api/returns/${id}`);
+  },
   createReturn(data) {
     return this.request('/api/returns', {
       method: 'POST',
@@ -397,10 +411,22 @@ const API = {
     });
   },
 
+  // Backup & Restore
+  restoreBackup(databaseBase64) {
+    return this.request('/api/backup/restore', {
+      method: 'POST',
+      body: JSON.stringify({ database_base64: databaseBase64 })
+    });
+  },
+
   // Cash Flow (Sổ quỹ)
   getCashFlow(params = {}) {
     const qs = new URLSearchParams(params).toString();
     return this.request(`/api/cash-flow${qs ? '?' + qs : ''}`);
+  },
+  getFundSummary(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/cash-flow/summary${qs ? '?' + qs : ''}`);
   },
   createCashFlow(data) {
     return this.request('/api/cash-flow', {
@@ -420,3 +446,5 @@ const API = {
     });
   }
 };
+
+window.API = API;
