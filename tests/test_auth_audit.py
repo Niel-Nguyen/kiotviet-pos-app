@@ -104,6 +104,23 @@ class TestKiotProAuthAudit(unittest.TestCase):
         server.DB_FILE = test_db
         database.init_db()
 
+        # Sản phẩm riêng cho test nghiệp vụ (giá vốn 5.000 < giá bán 10.000)
+        # để không phụ thuộc sản phẩm seed SP0001 (giá vốn 195.000) —
+        # server giờ chặn bán dưới giá vốn (PRICE_BELOW_COST)
+        conn = database.get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO products (code, name, unit, cost_price, sale_price, stock, min_stock, created_at, updated_at)
+            VALUES ('AUDIT_TEST_SP', 'Sản phẩm test audit', 'Cái', 5000, 10000, 500, 10, datetime('now'), datetime('now'))
+        """)
+        cls.audit_prod_id = cur.lastrowid
+        cur.execute("""
+            INSERT INTO product_units (product_id, unit_name, conversion_rate, sale_price, cost_price, is_base, created_at)
+            VALUES (?, 'Cái', 1, 10000, 5000, 1, datetime('now'))
+        """, (cls.audit_prod_id,))
+        conn.commit()
+        conn.close()
+
     @classmethod
     def tearDownClass(cls):
         cls.test_db_dir.cleanup()
@@ -312,7 +329,7 @@ class TestKiotProAuthAudit(unittest.TestCase):
         code, _, order_res = execute_http_request("POST", "/api/orders", headers=cashier_headers, body={
             "customer_id": 2,
             "customer_name": "Đại lý Tạp hóa Mai Linh",
-            "items": [{"product_id": 1, "quantity": 2, "sale_price": 10000}],
+            "items": [{"product_id": self.audit_prod_id, "quantity": 2, "sale_price": 10000}],
             "discount": 0,
             "vat_percent": 10,
             "paid_amount": 22000,
@@ -461,7 +478,7 @@ class TestKiotProAuthAudit(unittest.TestCase):
         code, _, ord_res = execute_http_request("POST", "/api/orders", headers=admin_headers, body={
             "customer_id": 1,
             "customer_name": "Khách lẻ",
-            "items": [{"product_id": 1, "quantity": 5, "sale_price": 10000}],
+            "items": [{"product_id": self.audit_prod_id, "quantity": 5, "sale_price": 10000}],
             "discount": 0,
             "vat_percent": 0,
             "paid_amount": 50000,
@@ -476,7 +493,7 @@ class TestKiotProAuthAudit(unittest.TestCase):
             "order_id": order_id,
             "customer_id": 1,
             "customer_name": "Khách lẻ",
-            "items": [{"product_id": 1, "quantity": 2, "return_price": 10000}],
+            "items": [{"product_id": self.audit_prod_id, "quantity": 2, "return_price": 10000}],
             "refund_amount": 20000,
             "debt_deduct_amount": 0,
             "fund_type": "cash",
