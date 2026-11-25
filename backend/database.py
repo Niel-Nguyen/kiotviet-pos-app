@@ -24,9 +24,15 @@ DATA_DIR = (
 DB_FILE = os.path.join(DATA_DIR, 'kiotviet.db')
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
+    # isolation_level=None + BEGIN IMMEDIATE o cac handler ghi: chuan multi-thread
+    conn = sqlite3.connect(DB_FILE, timeout=8.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 8000")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except sqlite3.Error:
+        pass
     return conn
 
 def init_db():

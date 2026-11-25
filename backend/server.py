@@ -19,6 +19,7 @@ import shutil
 import time
 import tempfile
 import math
+import sqlite3
 from http import cookies
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,9 +43,17 @@ def get_now_str():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def generate_code(prefix, table_name, cursor):
-    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-    count = cursor.fetchone()[0] + 1
-    return f"{prefix}{count:04d}"
+    # Dùng seq AUTOINCREMENT (sqlite_sequence): không bao giờ tái sử dụng mã
+    # đã cấp kể cả khi dòng cũ bị xóa (audit trail không bị nhiễm mã trùng),
+    # và đã được tuần tự hóa bằng BEGIN IMMEDIATE nên không có race giữa các request.
+    try:
+        cursor.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (table_name,))
+        row = cursor.fetchone()
+        seq = (row['seq'] if row and row['seq'] else 0)
+    except sqlite3.OperationalError:
+        cursor.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table_name}")
+        seq = cursor.fetchone()[0]
+    return f"{prefix}{seq + 1:04d}"
 
 def get_lan_ip():
     try:
@@ -182,12 +191,17 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
         return super().parse_request()
 
     def end_headers(self):
+        # CORS whitelist: chi echo Origin nam trong KIOTPRO_ALLOWED_ORIGINS
+        # (phan tach bang dau phay) cung voi localhost/127.0.0.1 cho LAN dev.
+        # Tuyet doi khong phan chieu Origin tuy y kem credentials (mo cua CSRF).
         origin = self.headers.get('Origin')
-        if origin:
+        allowed = [o.strip() for o in os.environ.get('KIOTPRO_ALLOWED_ORIGINS', '').split(',') if o.strip()]
+        if origin and (origin in allowed
+                       or origin.startswith('http://localhost')
+                       or origin.startswith('http://127.0.0.1')):
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Access-Control-Allow-Credentials', 'true')
-        else:
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Vary', 'Origin')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cookie')
         self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
@@ -574,8 +588,20 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 ret_row = cursor.fetchone()
                 total_returns = float(ret_row['total_returns']) if ret_row else 0.0
 
+                # Loi nhuan chi giam dung BIEN loi nhuan cua hang tra
+                # (gia tri tra - gia von hang tra), khong tru ca gia von
+                margin_sql = date_sql.replace('created_at', 'r.created_at')
+                cursor.execute(f"""
+                    SELECT COALESCE(SUM(ri.subtotal - ri.quantity * ri.cost_price), 0) as total_return_margin
+                    FROM return_items ri
+                    JOIN returns r ON ri.return_id = r.id
+                    WHERE 1=1 {margin_sql}
+                """, params)
+                margin_row = cursor.fetchone()
+                total_return_margin = float(margin_row['total_return_margin']) if margin_row else 0.0
+
                 net_sales = max(0.0, float(sales_row['total_sales']) - total_returns)
-                net_profit = float(sales_row['total_profit']) - total_returns
+                net_profit = float(sales_row['total_profit']) - total_return_margin
 
                 # 7-day revenue & profit trend (ending today)
                 start_trend = (now - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
@@ -600,6 +626,17 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 """, (start_trend, f"{start_trend} 00:00:00"))
                 trend_returns = {r['d_day']: float(r['day_returns']) for r in cursor.fetchall()}
 
+                cursor.execute("""
+                    SELECT
+                        COALESCE(date(r.created_at), substr(r.created_at, 1, 10)) as d_day,
+                        COALESCE(SUM(ri.subtotal - ri.quantity * ri.cost_price), 0) as day_margin
+                    FROM return_items ri
+                    JOIN returns r ON ri.return_id = r.id
+                    WHERE COALESCE(date(r.created_at), substr(r.created_at, 1, 10)) >= ? OR r.created_at >= ?
+                    GROUP BY d_day
+                """, (start_trend, f"{start_trend} 00:00:00"))
+                trend_return_margin = {r['d_day']: float(r['day_margin']) for r in cursor.fetchall()}
+
                 revenue_trend = []
                 for i in range(6, -1, -1):
                     day_obj = now - datetime.timedelta(days=i)
@@ -607,8 +644,9 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     disp = day_obj.strftime("%d/%m")
                     day_s, day_p = trend_orders.get(d_key, (0.0, 0.0))
                     day_r = trend_returns.get(d_key, 0.0)
+                    day_m = trend_return_margin.get(d_key, 0.0)
                     day_net_rev = max(0.0, round(day_s - day_r, 2))
-                    day_net_prof = round(day_p - day_r, 2)
+                    day_net_prof = round(day_p - day_m, 2)
                     revenue_trend.append({
                         "date": d_key,
                         "display_date": disp,
@@ -1099,6 +1137,11 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 """, params + [limit, offset])
 
                 orders = rows_to_list(cursor.fetchall())
+                # Bảo mật giá vốn: ẩn total_cost & profit với vai trò thiếu products:view_cost
+                if not auth.has_permission(user['role'], 'products:view_cost'):
+                    for o in orders:
+                        o.pop('total_cost', None)
+                        o.pop('profit', None)
                 # Return list if limit is 100 without pagination requested (backward compatibility) or dict
                 if 'period' in query or 'status' in query or 'q' in query or 'offset' in query:
                     self.send_json({"total": total_count, "orders": orders})
@@ -1118,6 +1161,12 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     return
                 cursor.execute("SELECT * FROM order_items WHERE order_id = ?", (order_id,))
                 order['items'] = rows_to_list(cursor.fetchall())
+                # Bảo mật giá vốn: ẩn total_cost, profit và cost_price từng dòng
+                if not auth.has_permission(user['role'], 'products:view_cost'):
+                    order.pop('total_cost', None)
+                    order.pop('profit', None)
+                    for oi in order['items']:
+                        oi.pop('cost_price', None)
                 self.send_json(order)
                 return
 
@@ -1301,6 +1350,9 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
 
         conn = get_db()
         cursor = conn.cursor()
+        # BEGIN IMMEDIATE: chiem write-lock ngay tu dau, tuan tu hoa giao dich ghi
+        # (chong race sinh ma chung tu / ban am kho giua cac luong ban song song)
+        conn.execute("BEGIN IMMEDIATE")
 
         try:
             # 1. INITIAL BOOTSTRAP (SAFE FIRST RUN SETUP)
@@ -2101,10 +2153,44 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                         self.send_error_json(f"Sản phẩm ID {item['product_id']} không tồn tại", 400)
                         return
 
-                    sale_price = float(item.get('sale_price', p['sale_price']))
+                    # Server tu tinh gia tham chieu theo dung thu tu bang gia:
+                    # 1) Gia rieng cua khach (customer_product_prices)
+                    # 2) Gia theo don vi quy doi (product_units)
+                    # 3) Gia ban co ban cua san pham
+                    conv = float(item.get('unit_conversion_rate', 1.0))
+                    ref_price = None
+                    if customer_id and customer_id != 1:
+                        cursor.execute(
+                            "SELECT custom_price FROM customer_product_prices WHERE customer_id = ? AND product_id = ?",
+                            (customer_id, p['id']))
+                        cp_row = cursor.fetchone()
+                        if cp_row is not None and cp_row['custom_price'] is not None:
+                            ref_price = float(cp_row['custom_price'])
+                    if ref_price is None:
+                        cursor.execute(
+                            "SELECT sale_price FROM product_units WHERE product_id = ? AND unit_name = ? LIMIT 1",
+                            (p['id'], item.get('unit') or p['unit']))
+                        pu_row = cursor.fetchone()
+                        if pu_row is not None and pu_row['sale_price'] is not None and float(pu_row['sale_price']) > 0:
+                            ref_price = float(pu_row['sale_price'])
+                        else:
+                            ref_price = float(p['sale_price'])
+                    # Thu ngan van duoc thoa thuan gia tai quay, NHUNG khong duoc
+                    # ban duoi gia von hoac gia am - chan mo thi truong loi nhuan.
+                    try:
+                        sale_price = float(item.get('sale_price', ref_price))
+                    except (TypeError, ValueError):
+                        sale_price = ref_price
                     if sale_price < 0:
                         self.send_error_json("Đơn giá sản phẩm không được âm", 400)
                         return
+                    unit_floor = float(p['cost_price'] or 0) * conv
+                    if not item.get('is_gift') and sale_price < unit_floor:
+                        self.send_error_json(
+                            f"Đơn giá '{p['name']}' ({sale_price:,.0f} đ) thấp hơn giá vốn ({unit_floor:,.0f} đ). Không được bán dưới giá vốn.",
+                            400, "PRICE_BELOW_COST")
+                        return
+                    item['is_custom_price'] = 1 if abs(sale_price - ref_price) > 0.009 else 0
 
                     qty = float(item['quantity'])
                     conv = float(item.get('unit_conversion_rate', 1.0))
@@ -2169,8 +2255,23 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     """, (order_id, it['product_id'], it['product_code'], it['product_name'], it['unit'], it['quantity'], it['cost_price'], it['sale_price'], 1 if it['is_custom_price'] else 0, it['subtotal'], it['unit_conversion_rate'], it['is_gift']))
 
                     if order_status == 'completed':
+                        # Tru ton kho TUONG DOI + dieu kien du ton (atomic),
+                        # chong ban am kho khi nhieu quay ban cung luc.
+                        if allow_negative_stock:
+                            cursor.execute(
+                                "UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ?",
+                                (it['base_qty'], now, it['product_id']))
+                        else:
+                            cursor.execute(
+                                "UPDATE products SET stock = stock - ?, updated_at = ? WHERE id = ? AND stock >= ?",
+                                (it['base_qty'], now, it['product_id'], it['base_qty']))
+                            if cursor.rowcount == 0:
+                                conn.rollback()
+                                self.send_error_json(
+                                    f"Sản phẩm '{it['product_name']}' không còn đủ tồn kho để bán {it['quantity']} {it['unit']}",
+                                    400, "INSUFFICIENT_STOCK")
+                                return
                         new_stock = it['current_stock'] - it['base_qty']
-                        cursor.execute("UPDATE products SET stock = ?, updated_at = ? WHERE id = ?", (new_stock, now, it['product_id']))
 
                         cursor.execute("""
                             INSERT INTO inventory_logs (product_id, type, reference_code, change_qty, stock_before, stock_after, notes, created_at, user_id, user_name)
@@ -2977,6 +3078,9 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
 
         conn = get_db()
         cursor = conn.cursor()
+        # BEGIN IMMEDIATE: chiem write-lock ngay tu dau, tuan tu hoa giao dich ghi
+        # (chong race sinh ma chung tu / ban am kho giua cac luong ban song song)
+        conn.execute("BEGIN IMMEDIATE")
 
         try:
             if path.startswith('/api/audit-logs'):
@@ -3226,7 +3330,7 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                         qty = float(it.get('quantity', 1))
                         conv = float(it.get('unit_conversion_rate', 1.0))
                         sale_price = float(it.get('sale_price', p['sale_price']))
-                        cost_price = float(it.get('cost_price', p['cost_price'] * conv))
+                        cost_price = float(p['cost_price'] or 0) * conv  # Giá vốn luôn do server quyết định
                         is_gift = 1 if it.get('is_gift') else 0
                         subtotal = 0.0 if is_gift else float(it.get('subtotal', qty * sale_price))
                         total_amount += subtotal
@@ -3409,6 +3513,9 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
 
         conn = get_db()
         cursor = conn.cursor()
+        # BEGIN IMMEDIATE: chiem write-lock ngay tu dau, tuan tu hoa giao dich ghi
+        # (chong race sinh ma chung tu / ban am kho giua cac luong ban song song)
+        conn.execute("BEGIN IMMEDIATE")
 
         try:
             if path.startswith('/api/audit-logs'):
@@ -3433,6 +3540,17 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 cursor.execute("SELECT code, name FROM products WHERE id = ?", (pid,))
                 p = cursor.fetchone()
                 if p:
+                    for ref_sql, ref_label in (
+                        ("SELECT COUNT(*) FROM order_items WHERE product_id = ?", "hóa đơn bán"),
+                        ("SELECT COUNT(*) FROM purchase_items WHERE product_id = ?", "phiếu nhập hàng"),
+                        ("SELECT COUNT(*) FROM return_items WHERE product_id = ?", "phiếu trả hàng"),
+                    ):
+                        cursor.execute(ref_sql, (pid,))
+                        if cursor.fetchone()[0] > 0:
+                            self.send_error_json(
+                                f"Không thể xóa sản phẩm '{p['name']}' vì đã phát sinh {ref_label}. Hãy ngừng bán (ẩn sản phẩm) thay vì xóa.",
+                                400, "PRODUCT_IN_USE")
+                            return
                     cursor.execute("DELETE FROM product_units WHERE product_id = ?", (pid,))
                     cursor.execute("DELETE FROM customer_product_prices WHERE product_id = ?", (pid,))
                     cursor.execute("DELETE FROM products WHERE id = ?", (pid,))
@@ -3456,9 +3574,26 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 cid = path.split('/')[3]
-                cursor.execute("SELECT code, name FROM customers WHERE id = ?", (cid,))
+                cursor.execute("SELECT code, name, debt FROM customers WHERE id = ?", (cid,))
                 c = cursor.fetchone()
                 if c:
+                    if float(c['debt'] or 0) != 0:
+                        self.send_error_json(
+                            f"Không thể xóa khách '{c['name']}' vì còn công nợ {float(c['debt']):,.0f} đ. Hãy thu hết nợ trước khi xóa.",
+                            400, "CUSTOMER_HAS_DEBT")
+                        return
+                    cursor.execute("SELECT COUNT(*) FROM orders WHERE customer_id = ?", (cid,))
+                    if cursor.fetchone()[0] > 0:
+                        self.send_error_json(
+                            f"Không thể xóa khách '{c['name']}' vì đã phát sinh đơn hàng/hoá đơn trong hệ thống.",
+                            400, "CUSTOMER_IN_USE")
+                        return
+                    cursor.execute("SELECT COUNT(*) FROM returns WHERE customer_id = ?", (cid,))
+                    if cursor.fetchone()[0] > 0:
+                        self.send_error_json(
+                            f"Không thể xóa khách '{c['name']}' vì đã có phiếu trả hàng.",
+                            400, "CUSTOMER_IN_USE")
+                        return
                     cursor.execute("DELETE FROM customers WHERE id = ?", (cid,))
                     auth.log_audit(
                         cursor=cursor,
@@ -3480,9 +3615,20 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 if not ok:
                     return
                 sid = path.split('/')[3]
-                cursor.execute("SELECT code, name FROM suppliers WHERE id = ?", (sid,))
+                cursor.execute("SELECT code, name, debt FROM suppliers WHERE id = ?", (sid,))
                 s = cursor.fetchone()
                 if s:
+                    if float(s['debt'] or 0) != 0:
+                        self.send_error_json(
+                            f"Không thể xóa nhà cung cấp '{s['name']}' vì còn nợ phải trả {float(s['debt']):,.0f} đ.",
+                            400, "SUPPLIER_HAS_DEBT")
+                        return
+                    cursor.execute("SELECT COUNT(*) FROM purchases WHERE supplier_id = ?", (sid,))
+                    if cursor.fetchone()[0] > 0:
+                        self.send_error_json(
+                            f"Không thể xóa nhà cung cấp '{s['name']}' vì đã có phiếu nhập hàng.",
+                            400, "SUPPLIER_IN_USE")
+                        return
                     cursor.execute("DELETE FROM suppliers WHERE id = ?", (sid,))
                     auth.log_audit(
                         cursor=cursor,

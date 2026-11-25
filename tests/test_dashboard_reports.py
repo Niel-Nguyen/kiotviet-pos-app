@@ -242,6 +242,12 @@ class TestDashboardReports(unittest.TestCase):
             INSERT INTO returns (code, order_id, customer_id, customer_name, total_amount, refund_amount, debt_deduct_amount, fund_type, created_at)
             VALUES ('TH001', ?, ?, 'Đại lý Mai Linh', 100000, 100000, 0, 'cash', ?)
         """, (ord1_id, cls.cust1_id, f"{cls.today_str} 11:00:00"))
+        ret1_id = c.lastrowid
+        # Return items: 10 Pepsi, hoàn 10.000đ/lon (refund 100.000), giá vốn 8.000
+        c.execute("""
+            INSERT INTO return_items (return_id, product_id, product_name, unit, quantity, return_price, cost_price, subtotal)
+            VALUES (?, ?, 'Nước ngọt Pepsi 330ml', 'Lon', 10, 10000, 8000, 100000)
+        """, (ret1_id, cls.prod1_id))
 
         # Order 2: YESTERDAY - 10x OMO (final_amount=1500000, net_revenue=1500000, profit=300000)
         c.execute("""
@@ -389,17 +395,17 @@ class TestDashboardReports(unittest.TestCase):
         self.assertEqual(code, 200)
         today = data.get("today", {})
 
-        # Order 1 today: sales=600000, profit=200000. Return today: 100000.
+        # Order 1 today: sales=600000, profit=200000. Return today: refund 100000, giá vốn hàng trả 80000.
         # Net revenue = 600000 - 100000 = 500000
-        # Net profit = 200000 - 100000 = 100000
+        # Net profit = 200000 - (100000 - 80000) = 180000 (chỉ trừ biên lợi nhuận của hàng trả)
         self.assertEqual(today.get("today_revenue"), 500000)
-        self.assertEqual(today.get("today_profit"), 100000)
+        self.assertEqual(today.get("today_profit"), 180000)
         self.assertEqual(today.get("today_orders"), 1)
         self.assertEqual(today.get("returns_total"), 100000)
 
         # Backward compatibility flat keys
         self.assertEqual(data.get("today_revenue"), 500000)
-        self.assertEqual(data.get("today_profit"), 100000)
+        self.assertEqual(data.get("today_profit"), 180000)
         self.assertEqual(data.get("today_orders"), 1)
         self.assertEqual(data.get("today_returns"), 100000)
 
@@ -437,9 +443,9 @@ class TestDashboardReports(unittest.TestCase):
         # 7days includes Order 1 (today: 600k), Order 2 (yesterday: 1500k), Order 3 (3 days ago: 180k)
         # Returns: 100k
         # Net sales = 600k + 1500k + 180k - 100k = 2,180,000
-        # Net profit = 200k + 300k + 50k - 100k = 450,000
+        # Net profit = 200k + 300k + 50k - 20k (biên hàng trả) = 530,000
         self.assertEqual(today.get("today_revenue"), 2180000)
-        self.assertEqual(today.get("today_profit"), 450000)
+        self.assertEqual(today.get("today_profit"), 530000)
         self.assertEqual(today.get("today_orders"), 3)
         self.assertEqual(today.get("returns_total"), 100000)
 
@@ -472,7 +478,7 @@ class TestDashboardReports(unittest.TestCase):
         self.assertEqual(today_entry['date'], self.today_str)
         self.assertEqual(today_entry['display_date'], self.now.strftime("%d/%m"))
         self.assertEqual(today_entry['revenue'], 500000)  # 600k - 100k
-        self.assertEqual(today_entry['profit'], 100000)   # 200k - 100k
+        self.assertEqual(today_entry['profit'], 180000)   # 200k - 20k biên hàng trả
 
         # Check yesterday's entry (2nd to last)
         yesterday_entry = trend[-2]
