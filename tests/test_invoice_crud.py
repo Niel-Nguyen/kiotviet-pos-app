@@ -121,7 +121,7 @@ class TestInvoiceCRUD(unittest.TestCase):
         conn.commit()
 
         # Create a sample product
-        status, _, _, _ = execute_http_request('POST', '/api/products', headers={
+        status, _, inv_prod_resp, _ = execute_http_request('POST', '/api/products', headers={
             'Authorization': f'Bearer {cls.admin_token}',
             'Content-Type': 'application/json',
             'Content-Length': '0'
@@ -134,6 +134,7 @@ class TestInvoiceCRUD(unittest.TestCase):
             'stock': 100,
             'min_stock': 5
         })
+        cls.order_product_id = inv_prod_resp.get('id')
 
         # Create a sample order/invoice
         status, _, order_resp, _ = execute_http_request('POST', '/api/orders', headers={
@@ -144,7 +145,7 @@ class TestInvoiceCRUD(unittest.TestCase):
             'customer_name': 'Test Customer',
             'status': 'completed',
             'items': [{
-                'product_id': 1,
+                'product_id': cls.order_product_id,
                 'quantity': 2,
                 'unit': 'cái',
                 'unit_conversion_rate': 1.0,
@@ -243,7 +244,7 @@ class TestInvoiceCRUD(unittest.TestCase):
             'customer_name': 'Delete Test Customer',
             'status': 'completed',
             'items': [{
-                'product_id': 1,
+                'product_id': self.order_product_id,
                 'quantity': 1,
                 'unit': 'cái',
                 'unit_conversion_rate': 1.0,
@@ -299,7 +300,7 @@ class TestInvoiceCRUD(unittest.TestCase):
             'customer_name': 'Recalc Test Customer',
             'status': 'completed',
             'items': [{
-                'product_id': 1,
+                'product_id': self.order_product_id,
                 'quantity': 2,
                 'unit': 'cái',
                 'unit_conversion_rate': 1.0,
@@ -316,7 +317,7 @@ class TestInvoiceCRUD(unittest.TestCase):
         # Now update line items to quantity 5, discount 10000, vat 10%
         status, upd_res, _ = self.request('PUT', f'/api/invoices/{inv_id}', {
             'items': [{
-                'product_id': 1,
+                'product_id': self.order_product_id,
                 'quantity': 5,
                 'unit': 'cái',
                 'unit_conversion_rate': 1.0,
@@ -360,7 +361,7 @@ class TestInvoiceCRUD(unittest.TestCase):
             'customer_name': 'Debt Protection',
             'status': 'completed',
             'items': [{
-                'product_id': 1,
+                'product_id': self.order_product_id,
                 'quantity': 1,
                 'unit': 'cái',
                 'unit_conversion_rate': 1.0,

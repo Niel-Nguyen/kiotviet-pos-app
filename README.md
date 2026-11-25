@@ -131,6 +131,24 @@ Hệ thống quản lý bán hàng (POS), phân phối, kho hàng, dòng tiền 
 
 ---
 
+## 🛡️ Nâng Cấp Bảo Mật & Toàn Vẹn Giao Dịch (v1.1 Professional Hardening)
+
+Các cải tiến vừa được áp dụng để đưa app lên chuẩn chuyên nghiệp đa quầy:
+
+1. **Chống bán dưới giá vốn**: Server tự tra giá tham chiếu (giá riêng khách → giá theo đơn vị → giá cơ bản). Thu ngân vẫn được thỏa thuận giá tại quầy, nhưng hệ thống chặn mọi đơn giá thấp hơn giá vốn (`PRICE_BELOW_COST`) và giá âm.
+2. **Chống race condition đa luồng**: mọi handler ghi dùng `BEGIN IMMEDIATE` + SQLite WAL mode; trừ tồn kho bằng UPDATE tương đối có điều kiện `stock >= ?` (`INSUFFICIENT_STOCK`) — nhiều quầy bán cùng lúc không bao giờ âm kho.
+3. **Mã chứng từ không bao giờ trùng/tái sử dụng**: sinh mã từ `sqlite_sequence` (AUTOINCREMENT), an toàn kể cả sau khi xóa dòng cũ.
+4. **CORS whitelist**: chỉ echo Origin nằm trong biến môi trường `KIOTPRO_ALLOWED_ORIGINS` (phân tách bằng dấu phẩy) cùng `localhost/127.0.0.1`. Tuyệt đối không phản chiếu Origin tùy ý kèm credentials.
+5. **Giá vốn bị ẩn hoàn toàn với vai trò thiếu quyền**: `GET /api/orders` và chi tiết hóa đơn tự loại bỏ `total_cost`, `profit`, `cost_price` nếu vai trò không có `products:view_cost`.
+6. **Xóa an toàn có kiểm soát**: chặn xóa khách còn công nợ (`CUSTOMER_HAS_DEBT`), khách/sản phẩm/NCC đã phát sinh giao dịch (`*_IN_USE`) với thông báo rõ ràng thay vì lỗi hệ thống 500.
+7. **Lợi nhuận chuẩn kế toán sau trả hàng**: profit chỉ trừ **biên lợi nhuận** của hàng trả (giá trị trả − giá vốn hàng trả), không trừ cả giá vốn như trước.
+
+### Biến môi trường mới
+
+| Biến | Ý nghĩa |
+| --- | --- |
+| `KIOTPRO_ALLOWED_ORIGINS` | Danh sách Origin được phép CORS, phân tách bằng dấu phẩy (vd: `https://pos.example.com,https://admin.example.com`) |
+
 ## 🔒 Khuyến Cáo Bảo Mật Mạng (Security Notice)
 > [!WARNING]
 > Khi vận hành ứng dụng trong mạng nội bộ (LAN) hoặc qua mạng không tin cậy (Wi-Fi công cộng):
