@@ -571,10 +571,14 @@
             <option value="bank">Chuyển khoản ngân hàng</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <input type="text" id="debt-notes" class="form-control" placeholder="Thu nợ khách hàng (tùy chọn)">
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="cust-debt-modal">Hủy</button>
-        <button class="btn btn-success" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ</button>
+        <button class="btn btn-success" id="btn-confirm-collect-debt" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ</button>
       </div>
     </div>
   </div>
@@ -648,10 +652,14 @@
             <option value="cash">Tiền mặt</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">Ghi chú:</label>
+          <input type="text" id="debt-supp-notes" class="form-control" placeholder="Trả nợ nhà cung cấp (tùy chọn)">
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline" data-close-modal="supp-debt-modal">Hủy</button>
-        <button class="btn btn-primary" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả</button>
+        <button class="btn btn-primary" id="btn-confirm-pay-supp-debt" onclick="App.submitSupplierDebtPayment()">Xác nhận chi trả</button>
       </div>
     </div>
   </div>

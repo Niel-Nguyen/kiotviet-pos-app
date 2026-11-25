@@ -423,5 +423,317 @@ class TestFrontendExecution(unittest.TestCase):
                 except Exception:
                     pass
 
+    def test_06_customer_debt_collection_in_browser(self):
+        """
+        Verify that opening the 'Thu tiền nợ khách hàng' modal and clicking 'Xác nhận thu nợ'
+        in production index.html does NOT trigger TDZ error 'Lỗi thu nợ: Cannot access res before initialization'.
+        """
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        index_html_path = os.path.join(repo_root, "frontend", "index.html")
+        with open(index_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        test_script = """<script>
+        window.__debt_test_result = { completed: false, errors: [], toasts: [], requestPayload: null };
+        window.addEventListener('error', function(e) {
+            window.__debt_test_result.errors.push(e.message);
+        });
+
+        window.addEventListener('DOMContentLoaded', function() {
+            setTimeout(async function() {
+                try {
+                    window.API.getCustomers = async function() {
+                        return [
+                            {
+                                id: 77,
+                                code: 'KH0077',
+                                name: 'Công ty TNHH Hoàng Gia',
+                                phone: '0909123456',
+                                email: 'contact@hoanggia.com',
+                                address: '123 Lê Lợi, Q1, TP.HCM',
+                                group_name: 'Đại lý VIP',
+                                total_spent: 50000000,
+                                debt: 1500000
+                            }
+                        ];
+                    };
+
+                    window.API.payCustomerDebt = async function(id, data) {
+                        window.__debt_test_result.requestPayload = data;
+                        return {
+                            success: true,
+                            receipt_code: 'PT00077',
+                            paid_amount: data.amount,
+                            remaining_debt: 1500000 - data.amount,
+                            new_debt: 1500000 - data.amount
+                        };
+                    };
+
+                    var origToast = window.App.toast;
+                    window.App.toast = function(msg, type) {
+                        window.__debt_test_result.toasts.push({ msg: msg, type: type });
+                        origToast.call(window.App, msg, type);
+                    };
+
+                    // Switch to customers view and render table
+                    window.App.currentUser = { role: 'admin', full_name: 'Quản trị viên' };
+                    await window.App.renderCustomersView();
+                    await window.App.loadCustomersTable();
+
+                    // Find and click the 'Thu nợ' button for KH0077
+                    var debtBtn = Array.from(document.querySelectorAll('#customers-table-body button')).find(function(b) {
+                        return b.textContent.trim() === 'Thu nợ';
+                    });
+                    if (!debtBtn) {
+                        throw new Error("Could not find 'Thu nợ' button in customers table");
+                    }
+
+                    debtBtn.click();
+                    await new Promise(r => setTimeout(r, 100));
+
+                    var modal = document.getElementById('cust-debt-modal');
+                    var custIdInput = document.getElementById('debt-cust-id');
+                    var amountInput = document.getElementById('debt-pay-amount');
+                    var custNameElem = document.getElementById('debt-cust-name');
+
+                    window.__debt_test_result.modalOpened = modal && modal.classList.contains('active');
+                    window.__debt_test_result.custName = custNameElem ? custNameElem.textContent : '';
+                    window.__debt_test_result.initialAmountValue = amountInput ? amountInput.value : '';
+
+                    // Change amount to 500,000
+                    amountInput.value = '500000';
+
+                    // Click 'Xác nhận thu nợ'
+                    var confirmBtn = modal.querySelector('button.btn-success');
+                    if (!confirmBtn) {
+                        throw new Error("Could not find 'Xác nhận thu nợ' confirm button");
+                    }
+
+                    confirmBtn.click();
+                    await new Promise(r => setTimeout(r, 200));
+
+                    window.__debt_test_result.modalClosed = modal && !modal.classList.contains('active');
+                    window.__debt_test_result.completed = true;
+                } catch (err) {
+                    window.__debt_test_result.errors.push(err.message);
+                } finally {
+                    var el = document.createElement('div');
+                    el.id = '__debt_test_output';
+                    el.textContent = JSON.stringify(window.__debt_test_result);
+                    document.body.appendChild(el);
+                }
+            }, 600);
+        });
+        </script>
+        """
+
+        html_with_test = html.replace("<head>", "<head>\n" + test_script)
+        temp_html = os.path.join(repo_root, "frontend", "_test_customer_debt.html")
+        with open(temp_html, "w", encoding="utf-8") as f:
+            f.write(html_with_test)
+
+        try:
+            cmd = [
+                self.chrome_exe,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--virtual-time-budget=4000",
+                "--dump-dom",
+                f"file:///{temp_html.replace(os.sep, '/')}"
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="ignore")
+            dom = res.stdout
+
+            idx = dom.find('id="__debt_test_output"')
+            self.assertNotEqual(idx, -1, "Debt test output div was not found in rendered DOM")
+
+            start = dom.find('>', idx) + 1
+            end = dom.find('</div>', start)
+            test_data = json.loads(dom[start:end])
+
+            self.assertTrue(test_data['completed'], f"Debt test did not complete: {test_data}")
+            self.assertEqual(len(test_data['errors']), 0, f"Errors occurred during debt payment: {test_data['errors']}")
+            self.assertTrue(test_data['modalOpened'], "Customer debt modal should open on clicking 'Thu nợ'")
+            self.assertEqual(test_data['custName'], "Công ty TNHH Hoàng Gia", "Customer name should match in debt modal")
+            self.assertEqual(test_data['initialAmountValue'], "1500000", "Initial debt amount should default to current debt")
+            self.assertTrue(test_data['modalClosed'], "Customer debt modal should close after successful submission")
+
+            # Check that request payload was properly sent without TDZ
+            self.assertIsNotNone(test_data['requestPayload'], "API.payCustomerDebt payload must be received")
+            self.assertEqual(test_data['requestPayload']['amount'], 500000)
+
+            # Ensure NO TDZ / Cannot access 'res' before initialization error toast occurred
+            error_toasts = [t for t in test_data['toasts'] if t['type'] == 'error']
+            self.assertEqual(len(error_toasts), 0, f"Error toast was displayed during debt collection: {error_toasts}")
+
+            # Ensure success toast was received
+            success_toasts = [t for t in test_data['toasts'] if t['type'] == 'success']
+            self.assertGreaterEqual(len(success_toasts), 1, "Success toast should be displayed")
+            self.assertIn("500.000", success_toasts[0]['msg'])
+            self.assertIn("1.000.000", success_toasts[0]['msg'])
+        finally:
+            if os.path.exists(temp_html):
+                try:
+                    os.remove(temp_html)
+                except Exception:
+                    pass
+
+    def test_07_cash_flow_view_execution_in_browser(self):
+        """
+        Directly executes production frontend/index.html in headless Chrome to test
+        the Cash Flow (Sổ quỹ & Dòng tiền) view end-to-end:
+        - Navigation to 'cash-flow'
+        - Summary cards display exact synchronized values
+        - Transactions table populated with codes, types, and fund badges
+        - Create Voucher modal interaction (open, title/type, close)
+        - Filter change triggers reload
+        """
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        index_html_path = os.path.join(repo_root, "frontend", "index.html")
+        with open(index_html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+
+        test_script = """<script>
+        window.__cash_flow_test_result = { completed: false, errors: [], checks: {} };
+        window.addEventListener('error', function(e) {
+            window.__cash_flow_test_result.errors.push(e.message);
+        });
+
+        window.addEventListener('DOMContentLoaded', function() {
+            setTimeout(async function() {
+                try {
+                    var mockCashFlowData = {
+                        items: [
+                            { code: 'PT0001', created_at: '2026-11-21 00:03:28', type: 'receipt', category: 'Số dư đầu kỳ', target_name: 'Quỹ tiền mặt', fund_type: 'cash', amount: 25000000, notes: 'Quỹ đầu kỳ' },
+                            { code: 'PT0002', created_at: '2026-11-21 00:03:28', type: 'receipt', category: 'Số dư đầu kỳ', target_name: 'Vietcombank', fund_type: 'bank', amount: 80000000, notes: 'Ngân hàng đầu kỳ' },
+                            { code: 'PC0001', created_at: '2026-11-21 00:03:28', type: 'payment', category: 'Chi phí thuê mặt bằng', target_name: 'Chủ nhà', fund_type: 'bank', amount: 12000000, notes: 'Thuê nhà' },
+                            { code: 'PC0002', created_at: '2026-11-21 00:03:28', type: 'payment', category: 'Chi trả tiền điện nước', target_name: 'Điện Lực', fund_type: 'cash', amount: 2150000, notes: 'Tiền điện' }
+                        ],
+                        summary: {
+                            current_balance: 123842000,
+                            total_balance: 123842000,
+                            total_receipts: 217552000,
+                            total_payments: 93710000,
+                            cash_balance: 85362000,
+                            bank_balance: 61300000
+                        }
+                    };
+
+                    window.API.getCashFlow = async function(params) {
+                        window.__cash_flow_test_result.lastFilter = params;
+                        return mockCashFlowData;
+                    };
+                    window.API.getFundSummary = async function() {
+                        return mockCashFlowData.summary;
+                    };
+
+                    // Setup authenticated user
+                    window.App.currentUser = { id: 1, role: 'admin', full_name: 'Quản trị viên' };
+                    window.App.userPermissions = new Set(['cash_flow:view', 'cash_flow:manage']);
+
+                    // Navigate to cash-flow view
+                    window.App.navigate('cash-flow');
+                    await new Promise(r => setTimeout(r, 200));
+
+                    var cfContainer = document.getElementById('view-cash-flow');
+                    var cfTbody = document.getElementById('cash-flow-tbody');
+                    var summaryCards = document.getElementById('cash-flow-summary-cards');
+
+                    window.__cash_flow_test_result.checks.viewVisible = cfContainer && cfContainer.style.display !== 'none';
+                    window.__cash_flow_test_result.checks.hasCurrentBalance = summaryCards && summaryCards.textContent.includes('123.842.000');
+                    window.__cash_flow_test_result.checks.hasTotalReceipts = summaryCards && summaryCards.textContent.includes('217.552.000');
+                    window.__cash_flow_test_result.checks.hasTotalPayments = summaryCards && summaryCards.textContent.includes('93.710.000');
+                    window.__cash_flow_test_result.checks.hasCashBalance = summaryCards && summaryCards.textContent.includes('85.362.000');
+                    window.__cash_flow_test_result.checks.hasBankBalance = summaryCards && summaryCards.textContent.includes('61.300.000');
+                    window.__cash_flow_test_result.checks.hasRows = cfTbody && cfTbody.querySelectorAll('tr').length === 4;
+                    window.__cash_flow_test_result.checks.hasPT0001 = cfTbody && cfTbody.textContent.includes('PT0001');
+
+                    // Test modal opening for receipt
+                    window.App.openCreateCashFlowModal('receipt');
+                    var modal = document.getElementById('cash-flow-modal');
+                    var modalTitle = document.getElementById('cf-modal-title');
+                    var modalType = document.getElementById('cf-modal-type');
+                    window.__cash_flow_test_result.checks.modalOpened = modal && modal.classList.contains('active');
+                    window.__cash_flow_test_result.checks.modalTitle = modalTitle ? modalTitle.textContent : '';
+                    window.__cash_flow_test_result.checks.modalType = modalType ? modalType.value : '';
+
+                    // Close modal
+                    var closeBtn = modal.querySelector('[data-close-modal="cash-flow-modal"]');
+                    if (closeBtn) closeBtn.click();
+                    await new Promise(r => setTimeout(r, 50));
+                    window.__cash_flow_test_result.checks.modalClosed = modal && !modal.classList.contains('active');
+
+                    // Test filter change
+                    var typeFilter = document.getElementById('cf-type-filter');
+                    if (typeFilter) {
+                        typeFilter.value = 'receipt';
+                        typeFilter.dispatchEvent(new Event('change'));
+                        await new Promise(r => setTimeout(r, 100));
+                        window.__cash_flow_test_result.checks.filterDispatched = window.__cash_flow_test_result.lastFilter && window.__cash_flow_test_result.lastFilter.type === 'receipt';
+                    }
+
+                    window.__cash_flow_test_result.completed = true;
+                } catch (err) {
+                    window.__cash_flow_test_result.errors.push(err.message);
+                } finally {
+                    var el = document.createElement('div');
+                    el.id = '__cash_flow_test_output';
+                    el.textContent = JSON.stringify(window.__cash_flow_test_result);
+                    document.body.appendChild(el);
+                }
+            }, 600);
+        });
+        </script>
+        """
+
+        html_with_test = html.replace("<head>", "<head>\n" + test_script)
+        temp_html = os.path.join(repo_root, "frontend", "_test_cash_flow_browser.html")
+        with open(temp_html, "w", encoding="utf-8") as f:
+            f.write(html_with_test)
+
+        try:
+            cmd = [
+                self.chrome_exe,
+                "--headless=new",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--virtual-time-budget=4000",
+                "--dump-dom",
+                f"file:///{temp_html.replace(os.sep, '/')}"
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="ignore")
+            dom = res.stdout
+
+            idx = dom.find('id="__cash_flow_test_output"')
+            self.assertNotEqual(idx, -1, "Cash flow test output div was not found in rendered DOM")
+
+            start = dom.find('>', idx) + 1
+            end = dom.find('</div>', start)
+            test_data = json.loads(dom[start:end])
+
+            self.assertTrue(test_data['completed'], f"Cash flow test did not complete: {test_data}")
+            self.assertEqual(len(test_data['errors']), 0, f"Errors occurred during cash flow execution: {test_data['errors']}")
+            checks = test_data['checks']
+            self.assertTrue(checks['viewVisible'], "Cash flow view section must be visible")
+            self.assertTrue(checks['hasCurrentBalance'], "Current balance 123.842.000 must be rendered")
+            self.assertTrue(checks['hasTotalReceipts'], "Total receipts 217.552.000 must be rendered")
+            self.assertTrue(checks['hasTotalPayments'], "Total payments 93.710.000 must be rendered")
+            self.assertTrue(checks['hasCashBalance'], "Cash balance TM: 85.362.000 must be rendered")
+            self.assertTrue(checks['hasBankBalance'], "Bank balance NH: 61.300.000 must be rendered")
+            self.assertTrue(checks['hasRows'], "Transactions table must contain 4 rows")
+            self.assertTrue(checks['hasPT0001'], "Code PT0001 must be in transactions table")
+            self.assertTrue(checks['modalOpened'], "Cash flow modal must open when openCreateCashFlowModal is called")
+            self.assertIn("Lập Phiếu Thu", checks['modalTitle'])
+            self.assertEqual(checks['modalType'], "receipt")
+            self.assertTrue(checks['modalClosed'], "Modal must close on clicking close button")
+            self.assertTrue(checks.get('filterDispatched', False), "Filter change must dispatch re-query with selected type")
+        finally:
+            if os.path.exists(temp_html):
+                try:
+                    os.remove(temp_html)
+                except Exception:
+                    pass
+
 if __name__ == "__main__":
     unittest.main()

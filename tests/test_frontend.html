@@ -121,6 +121,39 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="cust-debt-modal">
+    <div class="modal-dialog">
+      <button class="modal-close" data-close-modal="cust-debt-modal">✕</button>
+      <input type="hidden" id="debt-cust-id">
+      <strong id="debt-cust-name"></strong>
+      <span id="debt-cust-current"></span>
+      <input type="number" id="debt-pay-amount">
+      <select id="debt-fund-type">
+        <option value="cash">Tiền mặt tại quầy</option>
+        <option value="bank">Chuyển khoản</option>
+      </select>
+      <input type="text" id="debt-notes">
+      <button id="debt-confirm-btn" class="btn-success" onclick="App.submitCustomerDebtPayment()">Xác nhận thu nợ</button>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="cash-flow-modal">
+    <div class="modal-dialog">
+      <h3 id="cf-modal-title">Lập Phiếu Thu / Chi</h3>
+      <button class="modal-close" data-close-modal="cash-flow-modal">✕</button>
+      <input type="hidden" id="cf-modal-type">
+      <input type="text" id="cf-category">
+      <input type="number" id="cf-amount">
+      <input type="text" id="cf-target-name">
+      <select id="cf-fund-type">
+        <option value="cash">Tiền mặt</option>
+        <option value="bank">Tài khoản ngân hàng</option>
+      </select>
+      <textarea id="cf-notes"></textarea>
+      <button onclick="App.saveCashFlowVoucher()">Lưu phiếu</button>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="sample-dialog-modal">
     <div class="modal-dialog">
       <button class="modal-close" data-close-modal="sample-dialog-modal">✕</button>
@@ -488,6 +521,333 @@
       // Restore
       API.getProducts = originalGetProducts;
       App.toast = originalToast;
+
+      // ========================================================
+      // TEST SUITE 11: Customer Debt Collection Modal & Submissions
+      // ========================================================
+      const originalPayCustomerDebt = API.payCustomerDebt;
+      const originalLoadCustomersTable = App.loadCustomersTable;
+      const originalLoadTopFundSummary = App.loadTopFundSummary;
+
+      let payDebtPayload = null;
+      let payDebtId = null;
+      let loadTableCalled = false;
+      let loadSummaryCalled = false;
+
+      App.loadCustomersTable = () => { loadTableCalled = true; };
+      App.loadTopFundSummary = () => { loadSummaryCalled = true; };
+
+      // 11.1 openPayCustomerDebtModal populates modal and opens it
+      document.getElementById('debt-notes').value = 'Ghi chú cũ';
+      App.openPayCustomerDebtModal(5, 'Trần Thị Mai', 350000);
+      const debtModal = document.getElementById('cust-debt-modal');
+      assert(debtModal.classList.contains('active'), 'T11.1: cust-debt-modal is active after openPayCustomerDebtModal');
+      assert(document.getElementById('debt-cust-id').value === '5', 'T11.2: debt-cust-id populated');
+      assert(document.getElementById('debt-cust-name').textContent === 'Trần Thị Mai', 'T11.3: debt-cust-name populated');
+      assert(document.getElementById('debt-cust-current').textContent.includes('350.000'), 'T11.4: debt-cust-current formatted properly');
+      assert(document.getElementById('debt-pay-amount').value === '350000', 'T11.5: debt-pay-amount defaults to full current debt');
+      assert(document.getElementById('debt-notes').value === '', 'T11.5b: debt-notes reset to empty string upon opening');
+
+      // 11.2 Validation: invalid amount triggers warning toast and does not call API
+      lastToast = null;
+      document.getElementById('debt-pay-amount').value = '0';
+      await App.submitCustomerDebtPayment();
+      assert(lastToast !== null && lastToast.type === 'warning', 'T11.6: 0 amount triggers warning toast');
+
+      lastToast = null;
+      document.getElementById('debt-pay-amount').value = '-50000';
+      await App.submitCustomerDebtPayment();
+      assert(lastToast !== null && lastToast.type === 'warning', 'T11.7: negative amount triggers warning toast');
+
+      lastToast = null;
+      document.getElementById('debt-pay-amount').value = 'abc';
+      await App.submitCustomerDebtPayment();
+      assert(lastToast !== null && lastToast.type === 'warning', 'T11.8: NaN amount triggers warning toast');
+
+      // 11.3 Successful payment: NO TDZ error ("Cannot access 'res' before initialization")
+      document.getElementById('debt-pay-amount').value = '150000';
+      document.getElementById('debt-fund-type').value = 'bank';
+      document.getElementById('debt-notes').value = 'Khách trả đợt 1 qua Vietcombank';
+      API.payCustomerDebt = async (id, data) => {
+        payDebtId = id;
+        payDebtPayload = data;
+        return {
+          success: true,
+          receipt_code: 'PT0042',
+          paid_amount: 150000,
+          remaining_debt: 200000,
+          new_debt: 200000
+        };
+      };
+
+      lastToast = null;
+      loadTableCalled = false;
+      loadSummaryCalled = false;
+      await App.submitCustomerDebtPayment();
+
+      assert(payDebtId === '5', 'T11.9: API.payCustomerDebt called with customer ID');
+      assert(payDebtPayload && payDebtPayload.amount === 150000, 'T11.10: payload amount correct');
+      assert(payDebtPayload && payDebtPayload.fund_type === 'bank', 'T11.11: payload fund_type correct');
+      assert(payDebtPayload && payDebtPayload.notes === 'Khách trả đợt 1 qua Vietcombank', 'T11.12: payload notes matches input without TDZ');
+      assert(lastToast !== null && lastToast.type === 'success', 'T11.13: Success toast triggered');
+      assert(lastToast.msg.includes('150.000') && lastToast.msg.includes('200.000'), 'T11.14: Toast includes paid and remaining amounts');
+      assert(!debtModal.classList.contains('active'), 'T11.15: Modal closed on success');
+      assert(loadTableCalled, 'T11.16: loadCustomersTable refreshed');
+      assert(loadSummaryCalled, 'T11.17: loadTopFundSummary refreshed');
+
+      // 11.4 submitCollectDebt alias works identically
+      assert(typeof App.submitCollectDebt === 'function', 'T11.18: App.submitCollectDebt alias exists');
+      assert(typeof window.submitCustomerDebtPayment === 'function', 'T11.19: window.submitCustomerDebtPayment exists');
+      assert(typeof window.submitCollectDebt === 'function', 'T11.20: window.submitCollectDebt exists');
+      assert(typeof window.openPayCustomerDebtModal === 'function', 'T11.21: window.openPayCustomerDebtModal exists');
+      assert(typeof API.collectCustomerDebt === 'function', 'T11.22: API.collectCustomerDebt alias exists');
+      assert(typeof API.collectSupplierDebt === 'function', 'T11.22b: API.collectSupplierDebt alias exists');
+
+      // 11.5 Error handling: API exception caught and cleanly toasted
+      API.payCustomerDebt = async () => {
+        throw new Error('Số tiền thu không được vượt quá số dư nợ');
+      };
+      debtModal.classList.add('active');
+      lastToast = null;
+      await App.submitCollectDebt();
+      assert(lastToast !== null && lastToast.type === 'error', 'T11.23: API error caught and toasted with type error');
+      assert(lastToast.msg.includes('Lỗi thu nợ: Số tiền thu không được vượt quá số dư nợ'), 'T11.24: Toast contains server error message');
+
+      // Restore
+      API.payCustomerDebt = originalPayCustomerDebt;
+      App.loadCustomersTable = originalLoadCustomersTable;
+      App.loadTopFundSummary = originalLoadTopFundSummary;
+
+      // ========================================================
+      // TEST SUITE 12: Dashboard View Rendering & Period Filter
+      // ========================================================
+      const originalGetDashboardStats = API.getDashboardStats;
+      let requestedRange = null;
+      API.getDashboardStats = async (range) => {
+        requestedRange = range;
+        return {
+          date_filter: range,
+          today: {
+            today_revenue: 12500000,
+            today_profit: 3200000,
+            today_orders: 14,
+            returns_total: 250000
+          },
+          inventory: {
+            total_inventory_cost: 109966781,
+            total_products: 11,
+            total_stock_items: 7965,
+            low_stock_count: 1
+          },
+          debt: {
+            receivables: 4840000,
+            payables: 12500000
+          },
+          funds: {
+            total_balance: 141297000,
+            cash_balance: 80000000,
+            bank_balance: 61297000
+          },
+          revenue_trend: [
+            { date: '2026-11-17', display_date: '17/11', revenue: 5000000, profit: 1200000 },
+            { date: '2026-11-18', display_date: '18/11', revenue: 6000000, profit: 1500000 },
+            { date: '2026-11-19', display_date: '19/11', revenue: 7000000, profit: 1800000 },
+            { date: '2026-11-20', display_date: '20/11', revenue: 8000000, profit: 2000000 },
+            { date: '2026-11-21', display_date: '21/11', revenue: 9000000, profit: 2200000 },
+            { date: '2026-11-22', display_date: '22/11', revenue: 10000000, profit: 2500000 },
+            { date: '2026-11-23', display_date: '23/11', revenue: 12500000, profit: 3200000 }
+          ],
+          top_products: [
+            { id: 1, name: 'Pepsi lon 330ml', code: 'SP0011', unit: 'Lon', total_quantity: 386, total_sales: 4850000 },
+            { id: 2, name: 'Coca Cola 24 lon', code: 'SP0001', unit: 'Thùng', total_quantity: 20, total_sales: 4900000 }
+          ],
+          low_stock: [
+            { id: 2, code: 'SP0002', name: 'Mì Omachi', category: 'Thực phẩm', stock: 4, min_stock: 10, cost_price: 6500, sale_price: 9000, unit: 'Gói' }
+          ]
+        };
+      };
+
+      App.currentUser = { id: 1, full_name: 'Admin', role: 'admin' };
+      App.userPermissions = new Set(['reports:view', 'cash_flow:view']);
+
+      await App.renderDashboardView();
+      const dashContainer = document.getElementById('view-dashboard');
+      assert(dashContainer !== null, 'T12.1: view-dashboard container exists');
+      assert(dashContainer.innerHTML.includes('12.500.000 đ'), 'T12.2: Doanh thu thuần 12.500.000 đ rendered');
+      assert(dashContainer.innerHTML.includes('3.200.000 đ'), 'T12.3: Lợi nhuận gộp 3.200.000 đ rendered');
+      assert(dashContainer.innerHTML.includes('109.966.781 đ'), 'T12.4: Giá trị kho hàng 109.966.781 đ rendered');
+      assert(dashContainer.innerHTML.includes('11 sản phẩm'), 'T12.5: 11 sản phẩm rendered');
+      assert(dashContainer.innerHTML.includes('7.965 tồn'), 'T12.6: 7.965 tồn rendered');
+      assert(dashContainer.innerHTML.includes('4.840.000 đ'), 'T12.7: Công nợ phải thu 4.840.000 đ rendered');
+      assert(dashContainer.innerHTML.includes('12.500.000 đ'), 'T12.8: Nợ phải trả NCC 12.500.000 đ rendered');
+      assert(dashContainer.innerHTML.includes('141.297.000 đ'), 'T12.9: Số dư quỹ tiền 141.297.000 đ rendered');
+      assert(dashContainer.innerHTML.includes('TM: 80.000.000 đ'), 'T12.10: Quỹ TM rendered');
+      assert(dashContainer.innerHTML.includes('NH: 61.297.000 đ'), 'T12.11: Quỹ NH rendered');
+      assert(dashContainer.innerHTML.includes('Pepsi lon 330ml'), 'T12.12: Top product Pepsi rendered');
+      assert(dashContainer.innerHTML.includes('386 Lon'), 'T12.13: Top product quantity rendered');
+      assert(dashContainer.innerHTML.includes('Mì Omachi'), 'T12.14: Low stock product rendered');
+      assert(dashContainer.innerHTML.includes('Cảnh báo tồn kho an toàn (1)'), 'T12.15: Safe stock warning title with count 1 rendered');
+
+      // Test period change
+      App.setDashboardRange('7days');
+      assert(App.dashboardRange === '7days', 'T12.16: dashboardRange set to 7days');
+      assert(requestedRange === '7days', 'T12.17: API requested with 7days');
+
+      // Test top fund summary update
+      const fundElem = document.getElementById('top-fund-balance');
+      await App.loadTopFundSummary();
+      assert(fundElem && fundElem.textContent === '141.297.000 đ', 'T12.18: top-fund-balance updated to 141.297.000 đ');
+
+      // Test flat fallback format (legacy backend)
+      API.getDashboardStats = async () => ({
+        today_revenue: 8000000,
+        today_profit: -500000,
+        today_orders: 5,
+        today_returns: 100000,
+        inventory_value: 50000000,
+        total_products: 6,
+        total_stock_items: 250,
+        customer_debt: 3500000,
+        supplier_debt: 2000000,
+        cash_balance: 95000000,
+        drawer_cash: 45000000,
+        bank_balance: 50000000,
+        revenue_trend: [
+          { date: '2026-11-23', display_date: '23/11', revenue: 8000000, profit: -500000 }
+        ],
+        top_products: [
+          { id: 3, name: 'Hàng C', code: 'SP003', unit: 'Cái', sold_qty: 15, sold_amount: 1500000 }
+        ]
+      });
+      await App.renderDashboardView();
+      assert(dashContainer.innerHTML.includes('8.000.000 đ'), 'T12.19: Flat fallback today_revenue rendered');
+      assert(dashContainer.innerHTML.includes('-500.000 đ'), 'T12.20: Flat fallback negative profit rendered');
+      assert(dashContainer.innerHTML.includes('50.000.000 đ'), 'T12.21: Flat fallback inventory_value rendered');
+      assert(dashContainer.innerHTML.includes('3.500.000 đ'), 'T12.22: Flat fallback customer_debt rendered');
+      assert(dashContainer.innerHTML.includes('95.000.000 đ'), 'T12.23: Flat fallback cash_balance rendered');
+      assert(dashContainer.innerHTML.includes('15 Cái'), 'T12.24: Flat fallback sold_qty mapped to total_quantity');
+
+      // Restore
+      API.getDashboardStats = originalGetDashboardStats;
+
+      // ========================================================
+      // TEST SUITE 13: Cash Flow View & Fund Summary Synchronization
+      // ========================================================
+      // 13.1 Method existence on API and App
+      assert(typeof API.getCashFlow === 'function', 'T13.1: API.getCashFlow is a function');
+      assert(typeof API.getFundSummary === 'function', 'T13.2: API.getFundSummary is a function');
+      assert(typeof App.renderCashFlowView === 'function', 'T13.3: App.renderCashFlowView is a function');
+      assert(typeof App.loadCashFlowTable === 'function', 'T13.4: App.loadCashFlowTable is a function');
+      assert(typeof App.loadCashFlowData === 'function', 'T13.5: App.loadCashFlowData is a function');
+      assert(typeof App.normalizeCashFlowResponse === 'function', 'T13.6: App.normalizeCashFlowResponse is a function');
+      assert(typeof App.renderCashFlowSummaryCards === 'function', 'T13.7: App.renderCashFlowSummaryCards is a function');
+      assert(typeof App.renderCashFlowTableRows === 'function', 'T13.8: App.renderCashFlowTableRows is a function');
+
+      // 13.2 normalizeCashFlowResponse handles all formats safely
+      const rawListRes = [{ code: 'PT0001', amount: 50000, type: 'receipt', fund_type: 'cash' }];
+      const normRaw = App.normalizeCashFlowResponse(rawListRes);
+      assert(Array.isArray(normRaw.items) && normRaw.items.length === 1, 'T13.9: normalize handles raw array');
+      assert(normRaw.items[0].code === 'PT0001', 'T13.10: normalize preserves raw array item fields');
+
+      const itemsObjRes = {
+        items: [{ code: 'PC0001', amount: 30000, type: 'payment', fund_type: 'bank' }],
+        summary: { current_balance: 123842000, total_receipts: 217552000, total_payments: 93710000 }
+      };
+      const normItems = App.normalizeCashFlowResponse(itemsObjRes);
+      assert(Array.isArray(normItems.items) && normItems.items.length === 1, 'T13.11: normalize handles { items }');
+      assert(normItems.summary && normItems.summary.current_balance === 123842000, 'T13.12: normalize extracts summary');
+
+      const dataObjRes = { data: [{ code: 'PT0002', amount: 80000 }] };
+      const normData = App.normalizeCashFlowResponse(dataObjRes);
+      assert(normData.items.length === 1 && normData.items[0].code === 'PT0002', 'T13.13: normalize handles { data }');
+
+      const cashFlowsObjRes = { cash_flows: [{ code: 'PT0003', amount: 90000 }] };
+      const normCashFlows = App.normalizeCashFlowResponse(cashFlowsObjRes);
+      assert(normCashFlows.items.length === 1 && normCashFlows.items[0].code === 'PT0003', 'T13.14: normalize handles { cash_flows }');
+
+      const emptyNorm = App.normalizeCashFlowResponse(null);
+      assert(Array.isArray(emptyNorm.items) && emptyNorm.items.length === 0, 'T13.15: normalize handles null gracefully');
+
+      // 13.3 RBAC Access Denied for role without cash_flow:view (e.g., cashier)
+      App.currentUser = { id: 2, role: 'cashier', full_name: 'Thu Ngân B' };
+      App.userPermissions = new Set(['orders:create']);
+      const cfContainer = document.getElementById('view-cash-flow');
+      await App.renderCashFlowView();
+      assert(cfContainer.innerHTML.includes('Truy cập bị từ chối'), 'T13.16: Cashier without cash_flow:view denied access');
+
+      // 13.4 Cash Flow rendering with full summary cards and populated transactions
+      App.currentUser = { id: 1, role: 'admin', full_name: 'Quản trị viên' };
+      App.userPermissions = new Set(['cash_flow:view', 'cash_flow:manage']);
+
+      const mockCashFlowData = {
+        items: [
+          { code: 'PT0001', created_at: '2026-11-21 00:03:28', type: 'receipt', category: 'Số dư đầu kỳ', target_name: 'Quỹ tiền mặt', fund_type: 'cash', amount: 25000000, notes: 'Quỹ đầu kỳ' },
+          { code: 'PT0002', created_at: '2026-11-21 00:03:28', type: 'receipt', category: 'Số dư đầu kỳ', target_name: 'Vietcombank', fund_type: 'bank', amount: 80000000, notes: 'Ngân hàng đầu kỳ' },
+          { code: 'PC0001', created_at: '2026-11-21 00:03:28', type: 'payment', category: 'Chi phí thuê mặt bằng', target_name: 'Chủ nhà', fund_type: 'bank', amount: 12000000, notes: 'Thuê nhà' },
+          { code: 'PC0002', created_at: '2026-11-21 00:03:28', type: 'payment', category: 'Chi trả tiền điện nước', target_name: 'Điện Lực', fund_type: 'cash', amount: 2150000, notes: 'Tiền điện' }
+        ],
+        summary: {
+          current_balance: 123842000,
+          total_balance: 123842000,
+          total_receipts: 217552000,
+          total_payments: 93710000,
+          cash_balance: 85362000,
+          bank_balance: 61300000
+        }
+      };
+
+      const originalGetCashFlow = API.getCashFlow;
+      const originalGetFundSummary = API.getFundSummary;
+
+      let lastCashFlowFilter = null;
+      API.getCashFlow = async (params) => {
+        lastCashFlowFilter = params;
+        return mockCashFlowData;
+      };
+      API.getFundSummary = async () => mockCashFlowData.summary;
+
+      await App.renderCashFlowView();
+
+      // Check summary cards values
+      assert(cfContainer.innerHTML.includes('123.842.000 đ'), 'T13.17: TỒN QUỸ HIỆN TẠI displays 123.842.000 đ');
+      assert(cfContainer.innerHTML.includes('217.552.000 đ'), 'T13.18: TỔNG THỰC THU displays 217.552.000 đ');
+      assert(cfContainer.innerHTML.includes('93.710.000 đ'), 'T13.19: TỔNG THỰC CHI displays 93.710.000 đ');
+      assert(cfContainer.innerHTML.includes('TM: 85.362.000 đ'), 'T13.20: PHÂN LOẠI QUỸ TM displays 85.362.000 đ');
+      assert(cfContainer.innerHTML.includes('NH: 61.300.000 đ'), 'T13.21: PHÂN LOẠI QUỸ NH displays 61.300.000 đ');
+
+      // Check table rows populated
+      const cfTbody = document.getElementById('cash-flow-tbody');
+      assert(cfTbody !== null, 'T13.22: cash-flow-tbody exists');
+      assert(cfTbody.innerHTML.includes('PT0001'), 'T13.23: PT0001 rendered in table');
+      assert(cfTbody.innerHTML.includes('PC0001'), 'T13.24: PC0001 rendered in table');
+      assert(cfTbody.innerHTML.includes('Phiếu Thu (+)'), 'T13.25: Receipt badge rendered');
+      assert(cfTbody.innerHTML.includes('Phiếu Chi (-)'), 'T13.26: Payment badge rendered');
+      assert(cfTbody.innerHTML.includes('Chi phí thuê mặt bằng'), 'T13.27: Category rendered in table');
+
+      // 13.5 Array response fallback (backend returning raw array)
+      API.getCashFlow = async () => mockCashFlowData.items;
+      await App.loadCashFlowTable();
+      assert(cfTbody.innerHTML.includes('PT0001'), 'T13.28: Raw array correctly parsed and rendered in table');
+      assert(cfContainer.innerHTML.includes('123.842.000 đ'), 'T13.29: Summary synced via API.getFundSummary when response is raw array');
+
+      // 13.6 Empty transactions table shows empty state message
+      API.getCashFlow = async () => ({ items: [], summary: { current_balance: 0, total_receipts: 0, total_payments: 0, cash_balance: 0, bank_balance: 0 } });
+      await App.loadCashFlowTable();
+      assert(cfTbody.innerHTML.includes('Không có giao dịch sổ quỹ nào'), 'T13.30: Empty state shown when 0 transactions');
+
+      // 13.7 Filter change triggers loadCashFlowTable
+      const typeFilter = document.getElementById('cf-type-filter');
+      const fundFilter = document.getElementById('cf-fund-filter');
+      assert(typeFilter !== null && fundFilter !== null, 'T13.31: Filters exist');
+      typeFilter.value = 'receipt';
+      fundFilter.value = 'cash';
+      typeFilter.dispatchEvent(new Event('change'));
+      await new Promise(r => setTimeout(r, 50));
+      assert(lastCashFlowFilter && lastCashFlowFilter.type === 'receipt' && lastCashFlowFilter.fund === 'cash', 'T13.32: Filter change re-queries with type=receipt and fund=cash');
+
+      // Restore
+      API.getCashFlow = originalGetCashFlow;
+      API.getFundSummary = originalGetFundSummary;
 
       // ========================================================
       // ALL TESTS SUMMARY

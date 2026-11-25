@@ -137,7 +137,7 @@ const API = {
 
   // Dashboard & Reports
   getDashboardStats(range = 'today') {
-    return this.request(`/api/reports/dashboard?range=${range}`);
+    return this.request(`/api/reports/dashboard?range=${encodeURIComponent(range)}`);
   },
 
   // Products & Inventory
@@ -199,6 +199,12 @@ const API = {
       body: JSON.stringify(data)
     });
   },
+  collectCustomerDebt(id, data) {
+    return this.request(`/api/customers/${id}/collect-debt`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
   getCustomerOrdersCount(customerId) {
     return this.request(`/api/customers/${customerId}/orders/count`);
   },
@@ -242,6 +248,12 @@ const API = {
   },
   paySupplierDebt(id, data) {
     return this.request(`/api/suppliers/${id}/pay-debt`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+  collectSupplierDebt(id, data) {
+    return this.request(`/api/suppliers/${id}/collect-debt`, {
       method: 'POST',
       body: JSON.stringify(data)
     });
@@ -411,6 +423,10 @@ const API = {
   getCashFlow(params = {}) {
     const qs = new URLSearchParams(params).toString();
     return this.request(`/api/cash-flow${qs ? '?' + qs : ''}`);
+  },
+  getFundSummary(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request(`/api/cash-flow/summary${qs ? '?' + qs : ''}`);
   },
   createCashFlow(data) {
     return this.request('/api/cash-flow', {

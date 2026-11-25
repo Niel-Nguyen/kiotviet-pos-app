@@ -18,6 +18,7 @@ import base64
 import shutil
 import time
 import tempfile
+import math
 from http import cookies
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -54,6 +55,54 @@ def get_lan_ip():
         return ip
     except Exception:
         return "127.0.0.1"
+
+def get_cash_flow_summary(cursor, fund_filter='all'):
+    """
+    Computes cash flow metrics and fund balances (TM & NH)
+    synchronized across dashboard, cash flow view, and topbar.
+    """
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'receipt'")
+    overall_rec = float(cursor.fetchone()['total'])
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'payment'")
+    overall_pay = float(cursor.fetchone()['total'])
+    overall_bal = round(overall_rec - overall_pay, 2)
+
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'receipt' AND (fund_type = 'cash' OR fund_type IS NULL OR fund_type = '')")
+    rec_cash = float(cursor.fetchone()['total'])
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'payment' AND (fund_type = 'cash' OR fund_type IS NULL OR fund_type = '')")
+    pay_cash = float(cursor.fetchone()['total'])
+    cash_balance = round(rec_cash - pay_cash, 2)
+
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'receipt' AND fund_type = 'bank'")
+    rec_bank = float(cursor.fetchone()['total'])
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'payment' AND fund_type = 'bank'")
+    pay_bank = float(cursor.fetchone()['total'])
+    bank_balance = round(rec_bank - pay_bank, 2)
+
+    if fund_filter == 'cash':
+        summary_rec = rec_cash
+        summary_pay = pay_cash
+        summary_bal = cash_balance
+    elif fund_filter == 'bank':
+        summary_rec = rec_bank
+        summary_pay = pay_bank
+        summary_bal = bank_balance
+    else:
+        summary_rec = overall_rec
+        summary_pay = overall_pay
+        summary_bal = overall_bal
+
+    return {
+        "total_receipts": summary_rec,
+        "total_payments": summary_pay,
+        "current_balance": summary_bal,
+        "total_balance": summary_bal,
+        "cash_balance": cash_balance,
+        "bank_balance": bank_balance,
+        "overall_total_balance": overall_bal,
+        "overall_receipts": overall_rec,
+        "overall_payments": overall_pay
+    }
 
 def find_best_promotion(cursor, total_amount, items):
     """
@@ -481,6 +530,8 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     return
 
                 date_filter = query.get('range', ['today'])[0]
+                if date_filter not in ('today', 'yesterday', '7days', 'this_month'):
+                    date_filter = 'today'
                 now = datetime.datetime.now()
                 
                 date_sql = ""
@@ -488,20 +539,21 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
 
                 if date_filter == 'today':
                     d_str = now.strftime("%Y-%m-%d")
-                    date_sql = "AND created_at LIKE ?"
-                    params = [f"{d_str}%"]
+                    date_sql = "AND (COALESCE(date(created_at), substr(created_at, 1, 10)) = ? OR created_at LIKE ?)"
+                    params = [d_str, f"{d_str}%"]
                 elif date_filter == 'yesterday':
                     y_str = (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-                    date_sql = "AND created_at LIKE ?"
-                    params = [f"{y_str}%"]
+                    date_sql = "AND (COALESCE(date(created_at), substr(created_at, 1, 10)) = ? OR created_at LIKE ?)"
+                    params = [y_str, f"{y_str}%"]
                 elif date_filter == '7days':
-                    d_str = (now - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-                    date_sql = "AND created_at >= ?"
-                    params = [f"{d_str} 00:00:00"]
+                    start_7d = (now - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
+                    today_str = now.strftime("%Y-%m-%d")
+                    date_sql = "AND (COALESCE(date(created_at), substr(created_at, 1, 10)) >= ? AND COALESCE(date(created_at), substr(created_at, 1, 10)) <= ?)"
+                    params = [start_7d, today_str]
                 elif date_filter == 'this_month':
                     m_str = now.strftime("%Y-%m")
-                    date_sql = "AND created_at LIKE ?"
-                    params = [f"{m_str}%"]
+                    date_sql = "AND (substr(created_at, 1, 7) = ? OR created_at LIKE ?)"
+                    params = [m_str, f"{m_str}%"]
 
                 cursor.execute(f"""
                     SELECT 
@@ -520,49 +572,95 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     WHERE 1=1 {date_sql}
                 """, params)
                 ret_row = cursor.fetchone()
-                total_returns = ret_row['total_returns'] if ret_row else 0
+                total_returns = float(ret_row['total_returns']) if ret_row else 0.0
 
-                net_sales = sales_row['total_sales'] - total_returns
-                net_profit = sales_row['total_profit'] - total_returns
+                net_sales = max(0.0, float(sales_row['total_sales']) - total_returns)
+                net_profit = float(sales_row['total_profit']) - total_returns
 
-                cursor.execute("SELECT COALESCE(SUM(stock * cost_price), 0) as total_val, COUNT(id) as total_prods FROM products")
+                # 7-day revenue & profit trend (ending today)
+                start_trend = (now - datetime.timedelta(days=6)).strftime("%Y-%m-%d")
+                cursor.execute("""
+                    SELECT 
+                        COALESCE(date(created_at), substr(created_at, 1, 10)) as d_day,
+                        COALESCE(SUM(final_amount), 0) as day_sales,
+                        COALESCE(SUM(profit), 0) as day_profit
+                    FROM orders
+                    WHERE status = 'completed' AND (COALESCE(date(created_at), substr(created_at, 1, 10)) >= ? OR created_at >= ?)
+                    GROUP BY d_day
+                """, (start_trend, f"{start_trend} 00:00:00"))
+                trend_orders = {r['d_day']: (float(r['day_sales']), float(r['day_profit'])) for r in cursor.fetchall()}
+
+                cursor.execute("""
+                    SELECT 
+                        COALESCE(date(created_at), substr(created_at, 1, 10)) as d_day,
+                        COALESCE(SUM(total_amount), 0) as day_returns
+                    FROM returns
+                    WHERE COALESCE(date(created_at), substr(created_at, 1, 10)) >= ? OR created_at >= ?
+                    GROUP BY d_day
+                """, (start_trend, f"{start_trend} 00:00:00"))
+                trend_returns = {r['d_day']: float(r['day_returns']) for r in cursor.fetchall()}
+
+                revenue_trend = []
+                for i in range(6, -1, -1):
+                    day_obj = now - datetime.timedelta(days=i)
+                    d_key = day_obj.strftime("%Y-%m-%d")
+                    disp = day_obj.strftime("%d/%m")
+                    day_s, day_p = trend_orders.get(d_key, (0.0, 0.0))
+                    day_r = trend_returns.get(d_key, 0.0)
+                    day_net_rev = max(0.0, round(day_s - day_r, 2))
+                    day_net_prof = round(day_p - day_r, 2)
+                    revenue_trend.append({
+                        "date": d_key,
+                        "display_date": disp,
+                        "revenue": day_net_rev,
+                        "profit": day_net_prof
+                    })
+
+                # Point-in-time metrics: inventory, debt, funds
+                cursor.execute("""
+                    SELECT 
+                        COALESCE(SUM(stock * cost_price), 0) as total_val, 
+                        COUNT(id) as total_prods,
+                        COALESCE(SUM(stock), 0) as total_stock
+                    FROM products
+                """)
                 inv_row = cursor.fetchone()
+                total_inv_cost = round(float(inv_row['total_val']), 2)
+                total_prods = int(inv_row['total_prods'])
+                raw_stock = float(inv_row['total_stock'])
+                total_stock_items = int(round(raw_stock)) if raw_stock.is_integer() else round(raw_stock, 2)
 
                 cursor.execute("SELECT COUNT(id) as low_stock FROM products WHERE stock <= min_stock")
                 low_stock = cursor.fetchone()['low_stock']
 
                 cursor.execute("SELECT COALESCE(SUM(debt), 0) as total_cust_debt FROM customers")
-                cust_debt = cursor.fetchone()['total_cust_debt']
+                cust_debt = round(float(cursor.fetchone()['total_cust_debt']), 2)
 
                 cursor.execute("SELECT COALESCE(SUM(debt), 0) as total_sup_debt FROM suppliers")
-                sup_debt = cursor.fetchone()['total_sup_debt']
+                sup_debt = round(float(cursor.fetchone()['total_sup_debt']), 2)
 
-                cursor.execute("SELECT COALESCE(SUM(amount), 0) as total_rec FROM cash_flow WHERE type = 'receipt'")
-                total_rec = cursor.fetchone()['total_rec']
-                cursor.execute("SELECT COALESCE(SUM(amount), 0) as total_pay FROM cash_flow WHERE type = 'payment'")
-                total_pay = cursor.fetchone()['total_pay']
-                cash_balance = total_rec - total_pay
+                fund_summary = get_cash_flow_summary(cursor)
+                cash_balance = fund_summary['overall_total_balance']
+                drawer_cash = fund_summary['cash_balance']
+                bank_balance = fund_summary['bank_balance']
 
-                cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'receipt' AND fund_type = 'cash'")
-                rec_cash = cursor.fetchone()['total']
-                cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'payment' AND fund_type = 'cash'")
-                pay_cash = cursor.fetchone()['total']
-                drawer_cash = rec_cash - pay_cash
-
-                cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'receipt' AND fund_type = 'bank'")
-                rec_bank = cursor.fetchone()['total']
-                cursor.execute("SELECT COALESCE(SUM(amount), 0) as total FROM cash_flow WHERE type = 'payment' AND fund_type = 'bank'")
-                pay_bank = cursor.fetchone()['total']
-                bank_balance = rec_bank - pay_bank
-
+                # Top products in selected period
                 cursor.execute(f"""
-                    SELECT p.id, p.name, p.code, p.unit, SUM(oi.quantity) as sold_qty, SUM(oi.subtotal) as sold_amount
+                    SELECT 
+                        p.id, 
+                        p.name, 
+                        p.code, 
+                        COALESCE(p.unit, '') as unit, 
+                        COALESCE(ROUND(SUM(oi.quantity), 2), 0) as total_quantity,
+                        COALESCE(ROUND(SUM(oi.quantity), 2), 0) as sold_qty,
+                        COALESCE(ROUND(SUM(oi.subtotal), 2), 0) as total_sales,
+                        COALESCE(ROUND(SUM(oi.subtotal), 2), 0) as sold_amount
                     FROM order_items oi
                     JOIN orders o ON oi.order_id = o.id
                     JOIN products p ON oi.product_id = p.id
                     WHERE o.status = 'completed' {date_sql.replace('created_at', 'o.created_at')}
                     GROUP BY p.id
-                    ORDER BY sold_qty DESC
+                    ORDER BY total_quantity DESC
                     LIMIT 5
                 """, params)
                 top_products = rows_to_list(cursor.fetchall())
@@ -572,26 +670,57 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     FROM products
                     WHERE stock <= min_stock
                     ORDER BY stock ASC
-                    LIMIT 10
                 """)
                 low_stock_products = rows_to_list(cursor.fetchall())
 
                 self.send_json({
                     "date_filter": date_filter,
-                    "today_revenue": net_sales,
-                    "today_profit": net_profit,
+                    "today": {
+                        "today_revenue": round(net_sales, 2),
+                        "today_profit": round(net_profit, 2),
+                        "today_orders": sales_row['total_orders'],
+                        "returns_total": round(total_returns, 2),
+                        "total_sales": round(float(sales_row['total_sales']), 2),
+                        "net_revenue": round(float(sales_row['total_net_revenue']), 2)
+                    },
+                    "inventory": {
+                        "total_inventory_cost": total_inv_cost,
+                        "total_products": total_prods,
+                        "total_stock_items": total_stock_items,
+                        "inventory_value": total_inv_cost,
+                        "low_stock_count": low_stock
+                    },
+                    "debt": {
+                        "receivables": cust_debt,
+                        "payables": sup_debt,
+                        "customer_debt": cust_debt,
+                        "supplier_debt": sup_debt
+                    },
+                    "funds": {
+                        "total_balance": cash_balance,
+                        "cash_balance": drawer_cash,
+                        "bank_balance": bank_balance,
+                        "drawer_cash": drawer_cash
+                    },
+                    "revenue_trend": revenue_trend,
+                    "top_products": top_products,
+                    "low_stock": low_stock_products,
+                    "low_stock_products": low_stock_products,
+
+                    # Backward compatibility flat keys
+                    "today_revenue": round(net_sales, 2),
+                    "today_profit": round(net_profit, 2),
                     "today_orders": sales_row['total_orders'],
-                    "today_returns": total_returns,
-                    "inventory_value": inv_row['total_val'],
-                    "total_products": inv_row['total_prods'],
+                    "today_returns": round(total_returns, 2),
+                    "inventory_value": total_inv_cost,
+                    "total_products": total_prods,
+                    "total_stock_items": total_stock_items,
                     "low_stock_count": low_stock,
                     "customer_debt": cust_debt,
                     "supplier_debt": sup_debt,
                     "cash_balance": cash_balance,
                     "drawer_cash": drawer_cash,
-                    "bank_balance": bank_balance,
-                    "top_products": top_products,
-                    "low_stock_products": low_stock_products
+                    "bank_balance": bank_balance
                 })
                 return
 
@@ -1093,20 +1222,57 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(ret)
                 return
 
-            # 14. CASH FLOW
+            # 14. CASH FLOW & FUND SUMMARY
+            if path in ('/api/cash-flow/summary', '/api/fund-summary'):
+                user, ok = self.require_auth('cash_flow:view', conn=conn)
+                if not ok:
+                    return
+                fund_filter = query.get('fund', query.get('fund_type', ['all']))[0]
+                summary = get_cash_flow_summary(cursor, fund_filter)
+                self.send_json(summary)
+                return
+
             if path == '/api/cash-flow':
                 user, ok = self.require_auth('cash_flow:view', conn=conn)
                 if not ok:
                     return
                 flow_type = query.get('type', ['all'])[0]
+                fund_filter = query.get('fund', query.get('fund_type', ['all']))[0]
+                search_kw = query.get('search', [''])[0].strip()
+
                 sql = "SELECT * FROM cash_flow WHERE 1=1"
                 params = []
                 if flow_type in ('receipt', 'payment'):
                     sql += " AND type = ?"
                     params.append(flow_type)
-                sql += " ORDER BY id DESC LIMIT 150"
+                if fund_filter == 'cash':
+                    sql += " AND (fund_type = 'cash' OR fund_type IS NULL OR fund_type = '')"
+                elif fund_filter == 'bank':
+                    sql += " AND fund_type = 'bank'"
+                elif fund_filter not in ('all', '', None):
+                    sql += " AND fund_type = ?"
+                    params.append(fund_filter)
+
+                if search_kw:
+                    sql += " AND (code LIKE ? OR category LIKE ? OR target_name LIKE ? OR notes LIKE ? OR reference_code LIKE ?)"
+                    params.extend([f"%{search_kw}%"] * 5)
+
+                sql += " ORDER BY id DESC LIMIT 250"
                 cursor.execute(sql, params)
-                self.send_json(rows_to_list(cursor.fetchall()))
+                rows = rows_to_list(cursor.fetchall())
+
+                raw_format = query.get('raw', ['0'])[0] in ('1', 'true') or query.get('format', [''])[0] in ('raw', 'list', 'array')
+                if raw_format:
+                    self.send_json(rows)
+                    return
+
+                summary = get_cash_flow_summary(cursor, fund_filter)
+                self.send_json({
+                    "items": rows,
+                    "data": rows,
+                    "cash_flows": rows,
+                    "summary": summary
+                })
                 return
 
             # 15. SETTINGS
@@ -1682,19 +1848,38 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json({"success": True, "message": "Đã lưu giá riêng cho khách hàng"})
                 return
 
-            if path.startswith('/api/customers/') and path.endswith('/pay-debt'):
+            norm_path = path.rstrip('/')
+            if norm_path.startswith('/api/customers/') and (norm_path.endswith('/pay-debt') or norm_path.endswith('/collect-debt')):
                 user, ok = self.require_auth('debt:manage', conn=conn)
                 if not ok:
                     return
 
-                cust_id = int(path.split('/')[3])
-                amount = float(body.get('amount', 0))
-                fund_type = body.get('fund_type', 'cash')
-                notes = body.get('notes', 'Thu nợ khách hàng')
+                try:
+                    parts = norm_path.split('/')
+                    cust_id = int(parts[3])
+                    if cust_id <= 0:
+                        raise ValueError()
+                except (ValueError, IndexError):
+                    self.send_error_json("ID khách hàng không hợp lệ", 400)
+                    return
 
-                if amount <= 0:
+                raw_amount = body.get('amount')
+                if isinstance(raw_amount, bool):
+                    self.send_error_json("Số tiền thanh toán nợ không hợp lệ", 400)
+                    return
+
+                try:
+                    amount = float(raw_amount if raw_amount is not None else 0)
+                except (ValueError, TypeError):
+                    self.send_error_json("Số tiền thanh toán nợ không hợp lệ", 400)
+                    return
+
+                if not math.isfinite(amount) or amount <= 0:
                     self.send_error_json("Số tiền thanh toán nợ phải lớn hơn 0", 400)
                     return
+
+                fund_type = body.get('fund_type') or 'cash'
+                notes = (body.get('notes') or '').strip() or 'Thu nợ khách hàng'
 
                 cursor.execute("SELECT * FROM customers WHERE id = ?", (cust_id,))
                 customer = cursor.fetchone()
@@ -1702,12 +1887,14 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error_json("Khách hàng không tồn tại", 404)
                     return
 
-                current_debt = customer['debt']
+                current_debt = float(customer['debt'] or 0)
                 if amount > current_debt:
                     self.send_error_json(f"Số tiền thu ({amount:,.0f} đ) không được vượt quá số dư nợ hiện tại ({current_debt:,.0f} đ)", 400)
                     return
 
-                new_debt = max(0, current_debt - amount)
+                new_debt = max(0.0, round(current_debt - amount, 2))
+                if new_debt <= 0.0001:
+                    new_debt = 0.0
                 now = get_now_str()
                 cursor.execute("UPDATE customers SET debt = ? WHERE id = ?", (new_debt, cust_id))
 
@@ -1734,7 +1921,8 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     "success": True,
                     "receipt_code": receipt_code,
                     "paid_amount": amount,
-                    "remaining_debt": new_debt
+                    "remaining_debt": new_debt,
+                    "new_debt": new_debt
                 })
                 return
 
@@ -1780,19 +1968,37 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(row_to_dict(cursor.fetchone()), 201)
                 return
 
-            if path.startswith('/api/suppliers/') and path.endswith('/pay-debt'):
+            if norm_path.startswith('/api/suppliers/') and (norm_path.endswith('/pay-debt') or norm_path.endswith('/collect-debt')):
                 user, ok = self.require_auth('debt:manage', conn=conn)
                 if not ok:
                     return
 
-                sup_id = int(path.split('/')[3])
-                amount = float(body.get('amount', 0))
-                fund_type = body.get('fund_type', 'cash')
-                notes = body.get('notes', 'Trả nợ nhà cung cấp')
+                try:
+                    parts = norm_path.split('/')
+                    sup_id = int(parts[3])
+                    if sup_id <= 0:
+                        raise ValueError()
+                except (ValueError, IndexError):
+                    self.send_error_json("ID nhà cung cấp không hợp lệ", 400)
+                    return
 
-                if amount <= 0:
+                raw_amount = body.get('amount')
+                if isinstance(raw_amount, bool):
+                    self.send_error_json("Số tiền trả nợ không hợp lệ", 400)
+                    return
+
+                try:
+                    amount = float(raw_amount if raw_amount is not None else 0)
+                except (ValueError, TypeError):
+                    self.send_error_json("Số tiền trả nợ không hợp lệ", 400)
+                    return
+
+                if not math.isfinite(amount) or amount <= 0:
                     self.send_error_json("Số tiền trả nợ phải lớn hơn 0", 400)
                     return
+
+                fund_type = body.get('fund_type') or 'cash'
+                notes = (body.get('notes') or '').strip() or 'Trả nợ nhà cung cấp'
 
                 cursor.execute("SELECT * FROM suppliers WHERE id = ?", (sup_id,))
                 supplier = cursor.fetchone()
@@ -1800,12 +2006,14 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_error_json("Nhà cung cấp không tồn tại", 404)
                     return
 
-                current_debt = supplier['debt']
+                current_debt = float(supplier['debt'] or 0)
                 if amount > current_debt:
                     self.send_error_json(f"Số tiền trả ({amount:,.0f} đ) không được vượt quá số dư nợ hiện tại ({current_debt:,.0f} đ)", 400)
                     return
 
-                new_debt = max(0, current_debt - amount)
+                new_debt = max(0.0, round(current_debt - amount, 2))
+                if new_debt <= 0.0001:
+                    new_debt = 0.0
                 now = get_now_str()
                 cursor.execute("UPDATE suppliers SET debt = ? WHERE id = ?", (new_debt, sup_id))
 
@@ -1832,7 +2040,8 @@ class KiotVietHandler(http.server.SimpleHTTPRequestHandler):
                     "success": True,
                     "payment_code": payment_code,
                     "paid_amount": amount,
-                    "remaining_debt": new_debt
+                    "remaining_debt": new_debt,
+                    "new_debt": new_debt
                 })
                 return
 

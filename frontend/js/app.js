@@ -148,10 +148,26 @@ const App = {
         if (elem) elem.textContent = '***';
         return;
       }
-      const stats = await API.getDashboardStats();
+      let balance = null;
+      if (typeof API.getFundSummary === 'function') {
+        try {
+          const fundRes = await API.getFundSummary();
+          if (fundRes && (fundRes.overall_total_balance !== undefined || fundRes.total_balance !== undefined || fundRes.current_balance !== undefined)) {
+            balance = fundRes.overall_total_balance !== undefined ? fundRes.overall_total_balance : (fundRes.current_balance !== undefined ? fundRes.current_balance : fundRes.total_balance);
+          }
+        } catch (e) {
+          // fallback to getDashboardStats below
+        }
+      }
+      if (balance === null && typeof API.getDashboardStats === 'function') {
+        const stats = await API.getDashboardStats();
+        if (stats) {
+          balance = stats.cash_balance !== undefined ? stats.cash_balance : (stats.funds ? stats.funds.total_balance : 0);
+        }
+      }
       const elem = document.getElementById('top-fund-balance');
-      if (elem && stats) {
-        elem.textContent = this.formatMoney(stats.cash_balance !== undefined ? stats.cash_balance : (stats.funds ? stats.funds.total_balance : 0));
+      if (elem && balance !== null && balance !== undefined) {
+        elem.textContent = this.formatMoney(balance);
       }
     } catch (e) {
       console.warn('Could not load fund balance', e);
@@ -318,12 +334,41 @@ const App = {
     const container = document.getElementById('view-dashboard');
     if (!container) return;
 
+    if (this.currentUser && this.userPermissions && this.userPermissions.size > 0 && !this.userPermissions.has('reports:view')) {
+      container.innerHTML = this.renderAccessDenied('reports:view');
+      return;
+    }
+
     try {
-      const data = await API.getDashboardStats(this.dashboardRange);
-      const today = data.today || {};
-      const inv = data.inventory || {};
-      const debt = data.debt || {};
-      const funds = data.funds || {};
+      const data = (await API.getDashboardStats(this.dashboardRange)) || {};
+      const today = {
+        today_revenue: data.today?.today_revenue ?? data.today_revenue ?? 0,
+        today_profit: data.today?.today_profit ?? data.today_profit ?? 0,
+        today_orders: data.today?.today_orders ?? data.today_orders ?? 0,
+        returns_total: data.today?.returns_total ?? data.today_returns ?? data.returns_total ?? 0
+      };
+      const inv = {
+        total_inventory_cost: data.inventory?.total_inventory_cost ?? data.inventory?.inventory_value ?? data.inventory_value ?? 0,
+        total_products: data.inventory?.total_products ?? data.total_products ?? 0,
+        total_stock_items: data.inventory?.total_stock_items ?? data.total_stock_items ?? (data.inventory?.total_products ?? data.total_products ?? 0)
+      };
+      const debt = {
+        receivables: data.debt?.receivables ?? data.debt?.customer_debt ?? data.customer_debt ?? data.receivables ?? 0,
+        payables: data.debt?.payables ?? data.debt?.supplier_debt ?? data.supplier_debt ?? data.payables ?? 0
+      };
+      const funds = {
+        total_balance: data.funds?.total_balance ?? data.funds?.balance ?? data.cash_balance ?? data.total_balance ?? 0,
+        cash_balance: data.funds?.cash_balance ?? data.funds?.drawer_cash ?? data.drawer_cash ?? data.cash_balance ?? 0,
+        bank_balance: data.funds?.bank_balance ?? data.bank_balance ?? 0
+      };
+
+      const lowStockList = data.low_stock || data.low_stock_products || [];
+      const rawTopProducts = data.top_products || [];
+      const topProductsList = (Array.isArray(rawTopProducts) ? rawTopProducts : []).map(p => ({
+        ...p,
+        total_quantity: p.total_quantity !== undefined ? p.total_quantity : (p.sold_qty || 0),
+        total_sales: p.total_sales !== undefined ? p.total_sales : (p.sold_amount || 0)
+      }));
 
       const rangeLabels = {
         'today': 'Hôm nay',
@@ -331,6 +376,10 @@ const App = {
         '7days': '7 ngày qua',
         'this_month': 'Tháng này'
       };
+
+      const formattedStockItems = typeof inv.total_stock_items === 'number'
+        ? inv.total_stock_items.toLocaleString('vi-VN')
+        : (inv.total_stock_items || 0);
 
       container.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
@@ -376,7 +425,7 @@ const App = {
             <div class="stat-info">
               <p>Giá trị kho hàng (MAC)</p>
               <h3>${this.formatMoney(inv.total_inventory_cost || 0)}</h3>
-              <small>${inv.total_products || 0} sản phẩm (${inv.total_stock_items || 0} tồn)</small>
+              <small>${inv.total_products || 0} sản phẩm (${formattedStockItems} tồn)</small>
             </div>
           </div>
 
@@ -452,14 +501,14 @@ const App = {
                   </tr>
                 </thead>
                 <tbody>
-                  ${(data.top_products || []).length > 0 ? (data.top_products || []).map(p => `
+                  ${topProductsList.length > 0 ? topProductsList.map(p => `
                     <tr>
                       <td>
                         <strong style="color: var(--color-text-main);">${p.name}</strong><br>
                         <small style="color: var(--color-text-subtle);">${p.code}</small>
                       </td>
                       <td class="text-center">
-                        <span class="badge-tag badge-blue">${p.total_quantity} ${p.unit}</span>
+                        <span class="badge-tag badge-blue">${typeof p.total_quantity === 'number' ? p.total_quantity.toLocaleString('vi-VN') : (p.total_quantity || 0)} ${p.unit || ''}</span>
                       </td>
                       <td class="text-right tabular-nums font-bold">${this.formatMoney(p.total_sales)}</td>
                     </tr>
@@ -477,7 +526,7 @@ const App = {
           <div class="card-header" style="background-color: var(--color-danger-subtle); border-color: var(--color-danger-border);">
             <div class="card-title" style="color: var(--color-danger-text);">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
-              <span>Cảnh báo tồn kho an toàn (${(data.low_stock || []).length})</span>
+              <span>Cảnh báo tồn kho an toàn (${lowStockList.length})</span>
             </div>
             <button class="btn btn-sm btn-primary" onclick="App.openCreatePurchaseModal()">+ Nhập hàng ngay</button>
           </div>
@@ -497,7 +546,7 @@ const App = {
                   </tr>
                 </thead>
                 <tbody>
-                  ${(data.low_stock || []).length > 0 ? (data.low_stock || []).map(p => `
+                  ${lowStockList.length > 0 ? lowStockList.map(p => `
                     <tr>
                       <td><code>${p.code}</code></td>
                       <td><strong>${p.name}</strong></td>
@@ -535,19 +584,22 @@ const App = {
 
   renderBarChart(trendData) {
     if (!trendData || trendData.length === 0) return '<div class="empty-state">Chưa có số liệu</div>';
-    const maxVal = Math.max(...trendData.map(d => Math.max(d.revenue, d.profit, 1000000)));
+    const maxVal = Math.max(...trendData.map(d => Math.max(d.revenue || 0, Math.abs(d.profit || 0), 1000000)));
 
     return trendData.map(d => {
-      const revHeight = Math.max(8, (d.revenue / maxVal) * 180);
-      const profitHeight = Math.max(4, (d.profit / maxVal) * 180);
+      const rev = Number(d.revenue) || 0;
+      const prof = Number(d.profit) || 0;
+      const revHeight = rev > 0 ? Math.max(8, Math.round((rev / maxVal) * 180)) : 2;
+      const profitHeight = prof !== 0 ? Math.max(4, Math.round((Math.abs(prof) / maxVal) * 180)) : 2;
+      const profitColor = prof < 0 ? 'var(--color-danger)' : 'var(--color-success)';
 
       return `
         <div style="flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end;">
           <div style="display: flex; gap: 4px; align-items: flex-end;">
-            <div style="width: 14px; height: ${revHeight}px; background-color: var(--color-primary); border-radius: 3px 3px 0 0;" title="Doanh thu: ${this.formatMoney(d.revenue)}"></div>
-            <div style="width: 14px; height: ${profitHeight}px; background-color: var(--color-success); border-radius: 3px 3px 0 0;" title="Lợi nhuận: ${this.formatMoney(d.profit)}"></div>
+            <div style="width: 14px; height: ${revHeight}px; background-color: var(--color-primary); border-radius: 3px 3px 0 0;" title="Doanh thu: ${this.formatMoney(rev)}"></div>
+            <div style="width: 14px; height: ${profitHeight}px; background-color: ${profitColor}; border-radius: 3px 3px 0 0;" title="Lợi nhuận: ${this.formatMoney(prof)}"></div>
           </div>
-          <div style="font-size: 0.72rem; color: var(--color-text-subtle); margin-top: 6px; font-weight: 600;">${d.display_date}</div>
+          <div style="font-size: 0.72rem; color: var(--color-text-subtle); margin-top: 6px; font-weight: 600;">${d.display_date || ''}</div>
         </div>
       `;
     }).join('');
@@ -1623,7 +1675,9 @@ const App = {
         return;
       }
 
-      tbody.innerHTML = filtered.map(c => `
+      tbody.innerHTML = filtered.map(c => {
+        const safeName = (c.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        return `
         <tr>
           <td><strong>${c.code}</strong></td>
           <td>
@@ -1644,19 +1698,20 @@ const App = {
             ` : '<span style="color: var(--color-text-disabled);">0 đơn</span>'}
           </td>
           <td class="text-center">
-            <button class="btn btn-sm btn-outline" style="background-color: #fffbeb; border-color: #fde68a; color: #92400e; font-weight: 600;" onclick="App.openCustomerPricingModal(${c.id}, '${c.name.replace(/'/g, "\\'")}')">
+            <button class="btn btn-sm btn-outline" style="background-color: #fffbeb; border-color: #fde68a; color: #92400e; font-weight: 600;" onclick="App.openCustomerPricingModal(${c.id}, '${safeName}')">
               Giá riêng
             </button>
           </td>
           <td class="text-right" style="white-space: nowrap;">
             <button class="btn btn-sm btn-outline" onclick="App.openCustomerDetailModal(${c.id})" title="Xem tóm tắt đơn hàng & thông tin">Chi tiết</button>
-            ${c.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPayCustomerDebtModal(${c.id}, '${c.name.replace(/'/g, "\\'")}', ${c.debt})">Thu nợ</button>` : ''}
+            ${c.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPayCustomerDebtModal(${c.id}, '${safeName}', ${c.debt})">Thu nợ</button>` : ''}
             <button class="btn btn-sm btn-outline" onclick="App.openEditCustomerModal(${c.id})">Sửa</button>
             ${c.id !== 1 ? `<button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.deleteCustomer(${c.id})">Xóa</button>` : ''}
             <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('customer', '${c.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     } catch (err) {
       App.toast('Lỗi tải khách hàng: ' + err.message, 'error');
     }
@@ -1786,36 +1841,78 @@ const App = {
 
   openPayCustomerDebtModal(customerId, customerName, currentDebt) {
     const modal = document.getElementById('cust-debt-modal');
-    document.getElementById('debt-cust-id').value = customerId;
-    document.getElementById('debt-cust-name').textContent = customerName;
-    document.getElementById('debt-cust-current').textContent = this.formatMoney(currentDebt);
-    document.getElementById('debt-pay-amount').value = currentDebt;
+    if (!modal) return;
+    const idEl = document.getElementById('debt-cust-id');
+    const nameEl = document.getElementById('debt-cust-name');
+    const currEl = document.getElementById('debt-cust-current');
+    const amtEl = document.getElementById('debt-pay-amount');
+    const notesEl = document.getElementById('debt-notes');
+    if (idEl) {
+      idEl.value = customerId;
+      idEl.dataset.currentDebt = currentDebt || 0;
+    }
+    if (nameEl) nameEl.textContent = customerName || '';
+    if (currEl) currEl.textContent = App.formatMoney(currentDebt || 0);
+    if (amtEl) {
+      amtEl.value = currentDebt || '';
+      amtEl.max = currentDebt || '';
+    }
+    if (notesEl) notesEl.value = '';
     modal.classList.add('active');
   },
 
   async submitCustomerDebtPayment() {
-    const custId = document.getElementById('debt-cust-id').value;
-    const amount = parseFloat(document.getElementById('debt-pay-amount').value);
-    const fundType = document.getElementById('debt-fund-type').value;
+    const custId = document.getElementById('debt-cust-id')?.value;
+    const rawAmount = document.getElementById('debt-pay-amount')?.value;
+    const amount = parseFloat(rawAmount);
+    const fundType = document.getElementById('debt-fund-type')?.value || 'cash';
+    const notesInput = document.getElementById('debt-notes')?.value?.trim();
 
-    if (isNaN(amount) || amount <= 0) {
+    if (!custId) {
+      App.toast('Vui lòng chọn khách hàng cần thu nợ', 'warning');
+      return;
+    }
+
+    if (isNaN(amount) || amount <= 0 || !isFinite(amount)) {
       App.toast('Số tiền thu nợ phải lớn hơn 0', 'warning');
       return;
     }
+
+    const confirmBtn = document.getElementById('btn-confirm-collect-debt') || document.querySelector('#cust-debt-modal button.btn-success');
+    if (confirmBtn) confirmBtn.disabled = true;
 
     try {
       const res = await API.payCustomerDebt(custId, {
         amount: amount,
         fund_type: fundType,
-        notes: `Thu nợ khách hàng (Phiếu thu ${res?.receipt_code || ''})`
+        notes: notesInput || 'Thu nợ khách hàng'
       });
-      App.toast(`Đã thu ${this.formatMoney(amount)}. Nợ còn lại: ${this.formatMoney(res.new_debt)}`, 'success');
-      document.getElementById('cust-debt-modal').classList.remove('active');
-      this.loadCustomersTable();
-      this.loadTopFundSummary();
+      const remainingDebt = res?.remaining_debt !== undefined ? res.remaining_debt : (res?.new_debt ?? 0);
+      const receiptCode = res?.receipt_code ? ` (Mã PT: ${res.receipt_code})` : '';
+      App.toast(`Đã thu ${App.formatMoney(amount)}. Nợ còn lại: ${App.formatMoney(remainingDebt)}${receiptCode}`, 'success');
+      document.getElementById('cust-debt-modal')?.classList.remove('active');
+      try {
+        if (typeof App.loadCustomersTable === 'function') {
+          await App.loadCustomersTable();
+        }
+        if (typeof App.loadTopFundSummary === 'function') {
+          await App.loadTopFundSummary();
+        }
+        if (typeof POS !== 'undefined' && typeof POS.loadCustomers === 'function') {
+          await POS.loadCustomers();
+        }
+      } catch (refreshErr) {
+        console.warn('Could not refresh tables after debt payment:', refreshErr);
+      }
     } catch (err) {
       App.toast('Lỗi thu nợ: ' + err.message, 'error');
+    } finally {
+      if (confirmBtn) confirmBtn.disabled = false;
     }
+  },
+
+  submitCollectDebt() {
+    return this.submitCustomerDebtPayment();
   },
 
   async openCustomerPricingModal(customerId, customerName) {
@@ -2012,7 +2109,9 @@ const App = {
         return;
       }
 
-      tbody.innerHTML = filtered.map(s => `
+      tbody.innerHTML = filtered.map(s => {
+        const safeName = (s.name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        return `
         <tr>
           <td><strong>${s.code}</strong></td>
           <td><strong>${s.name}</strong></td>
@@ -2023,14 +2122,15 @@ const App = {
           </td>
           <td><small style="color: var(--color-text-subtle);">${s.notes || ''}</small></td>
           <td class="text-right" style="white-space: nowrap;">
-            ${s.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPaySupplierDebtModal(${s.id}, '${s.name.replace(/'/g, "\\'")}', ${s.debt})">Trả nợ</button>` : ''}
+            ${s.debt > 0 ? `<button class="btn btn-sm btn-success" onclick="App.openPaySupplierDebtModal(${s.id}, '${safeName}', ${s.debt})">Trả nợ</button>` : ''}
             <button class="btn btn-sm btn-primary" onclick="App.openCreatePurchaseModal()">Nhập hàng</button>
             <button class="btn btn-sm btn-outline" onclick="App.openEditSupplierModal(${s.id})">Sửa</button>
             <button class="btn btn-sm btn-outline text-danger" style="color: var(--color-danger);" onclick="App.deleteSupplier(${s.id})">Xóa</button>
             <button class="btn btn-sm btn-outline" onclick="App.viewEntityTimeline('supplier', '${s.code}')" title="Xem lịch sử kiểm toán">Lịch sử</button>
           </td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     } catch (err) {
       App.toast('Lỗi tải nhà cung cấp: ' + err.message, 'error');
     }
@@ -2135,34 +2235,70 @@ const App = {
 
   openPaySupplierDebtModal(suppId, suppName, debt) {
     const modal = document.getElementById('supp-debt-modal');
-    document.getElementById('debt-supp-id').value = suppId;
-    document.getElementById('debt-supp-name').textContent = suppName;
-    document.getElementById('debt-supp-current').textContent = this.formatMoney(debt);
-    document.getElementById('debt-supp-amount').value = debt;
+    if (!modal) return;
+    const idEl = document.getElementById('debt-supp-id');
+    const nameEl = document.getElementById('debt-supp-name');
+    const currEl = document.getElementById('debt-supp-current');
+    const amtEl = document.getElementById('debt-supp-amount');
+    const notesEl = document.getElementById('debt-supp-notes');
+    if (idEl) {
+      idEl.value = suppId;
+      idEl.dataset.currentDebt = debt || 0;
+    }
+    if (nameEl) nameEl.textContent = suppName || '';
+    if (currEl) currEl.textContent = App.formatMoney(debt || 0);
+    if (amtEl) {
+      amtEl.value = debt || '';
+      amtEl.max = debt || '';
+    }
+    if (notesEl) notesEl.value = '';
     modal.classList.add('active');
   },
 
   async submitSupplierDebtPayment() {
-    const suppId = document.getElementById('debt-supp-id').value;
-    const amount = parseFloat(document.getElementById('debt-supp-amount').value);
-    const fundType = document.getElementById('debt-supp-fund-type').value;
+    const suppId = document.getElementById('debt-supp-id')?.value;
+    const rawAmount = document.getElementById('debt-supp-amount')?.value;
+    const amount = parseFloat(rawAmount);
+    const fundType = document.getElementById('debt-supp-fund-type')?.value || 'cash';
 
-    if (isNaN(amount) || amount <= 0) {
+    if (!suppId) {
+      App.toast('Vui lòng chọn nhà cung cấp cần trả nợ', 'warning');
+      return;
+    }
+
+    if (isNaN(amount) || amount <= 0 || !isFinite(amount)) {
       App.toast('Số tiền trả nợ phải lớn hơn 0', 'warning');
       return;
     }
 
+    const confirmBtn = document.getElementById('btn-confirm-pay-supp-debt') || document.querySelector('#supp-debt-modal button.btn-primary');
+    if (confirmBtn) confirmBtn.disabled = true;
+
     try {
+      const notes = document.getElementById('debt-supp-notes')?.value?.trim() || 'Trả nợ nhà cung cấp';
       const res = await API.paySupplierDebt(suppId, {
         amount: amount,
-        fund_type: fundType
+        fund_type: fundType,
+        notes: notes
       });
-      App.toast(`Đã trả nợ ${this.formatMoney(amount)}. Nợ còn lại: ${this.formatMoney(res.new_debt)}`, 'success');
-      document.getElementById('supp-debt-modal').classList.remove('active');
-      this.renderSuppliersView();
-      this.loadTopFundSummary();
+      const remainingDebt = res?.remaining_debt !== undefined ? res.remaining_debt : (res?.new_debt ?? 0);
+      const paymentCode = res?.payment_code ? ` (Mã PC: ${res.payment_code})` : '';
+      App.toast(`Đã trả nợ ${App.formatMoney(amount)}. Nợ còn lại: ${App.formatMoney(remainingDebt)}${paymentCode}`, 'success');
+      document.getElementById('supp-debt-modal')?.classList.remove('active');
+      try {
+        if (typeof App.renderSuppliersView === 'function') {
+          await App.renderSuppliersView();
+        }
+        if (typeof App.loadTopFundSummary === 'function') {
+          await App.loadTopFundSummary();
+        }
+      } catch (refreshErr) {
+        console.warn('Could not refresh views after paying supplier debt:', refreshErr);
+      }
     } catch (err) {
       App.toast('Lỗi trả nợ NCC: ' + err.message, 'error');
+    } finally {
+      if (confirmBtn) confirmBtn.disabled = false;
     }
   },
 
@@ -2542,6 +2678,11 @@ const App = {
     const container = document.getElementById('view-cash-flow');
     if (!container) return;
 
+    if (this.currentUser && this.hasPermission && !this.hasPermission('cash_flow:view')) {
+      container.innerHTML = this.renderAccessDenied('cash_flow:view');
+      return;
+    }
+
     container.innerHTML = `
       <div id="cash-flow-summary-cards" class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));">
       </div>
@@ -2593,100 +2734,182 @@ const App = {
       </div>
     `;
 
-    document.getElementById('cf-type-filter').addEventListener('change', () => this.loadCashFlowData());
-    document.getElementById('cf-fund-filter').addEventListener('change', () => this.loadCashFlowData());
-    this.loadCashFlowData();
+    const typeFilter = document.getElementById('cf-type-filter');
+    const fundFilter = document.getElementById('cf-fund-filter');
+    if (typeFilter) typeFilter.addEventListener('change', () => this.loadCashFlowTable());
+    if (fundFilter) fundFilter.addEventListener('change', () => this.loadCashFlowTable());
+
+    await this.loadCashFlowTable();
   },
 
-  async loadCashFlowData() {
+  normalizeCashFlowResponse(res) {
+    let items = [];
+    let summary = null;
+
+    if (Array.isArray(res)) {
+      items = res;
+    } else if (res && typeof res === 'object') {
+      if (Array.isArray(res.items)) {
+        items = res.items;
+      } else if (Array.isArray(res.data)) {
+        items = res.data;
+      } else if (Array.isArray(res.cash_flows)) {
+        items = res.cash_flows;
+      } else if (Array.isArray(res.rows)) {
+        items = res.rows;
+      }
+      if (res.summary && typeof res.summary === 'object') {
+        summary = { ...res.summary };
+      }
+    }
+
+    return { items, summary };
+  },
+
+  async loadCashFlowTable() {
     const type = document.getElementById('cf-type-filter')?.value || 'all';
     const fund = document.getElementById('cf-fund-filter')?.value || 'all';
 
     try {
       const res = await API.getCashFlow({ type, fund });
-      const summary = res.summary || {};
+      const { items, summary: resSummary } = this.normalizeCashFlowResponse(res);
 
-      const summaryCards = document.getElementById('cash-flow-summary-cards');
-      if (summaryCards) {
-        summaryCards.innerHTML = `
-          <div class="stat-card">
-            <div class="stat-icon icon-blue">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Tồn quỹ hiện tại</p>
-              <h3 style="color: var(--color-primary);">${this.formatMoney(summary.current_balance)}</h3>
-              <small>Thực thu trừ thực chi</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-green">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Tổng thực thu</p>
-              <h3 style="color: var(--color-success);">${this.formatMoney(summary.total_receipts)}</h3>
-              <small>Bán hàng & thu nợ</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-red">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Tổng thực chi</p>
-              <h3 style="color: var(--color-danger);">${this.formatMoney(summary.total_payments)}</h3>
-              <small>Nhập hàng & chi phí</small>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon icon-purple">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/></svg>
-            </div>
-            <div class="stat-info">
-              <p>Phân loại quỹ</p>
-              <div style="font-size: 0.8rem; font-weight: 700; margin-top: 3px;" class="tabular-nums">
-                TM: ${this.formatMoney(summary.cash_balance)}<br>
-                NH: ${this.formatMoney(summary.bank_balance)}
-              </div>
-            </div>
-          </div>
-        `;
+      let summary = resSummary;
+      if (!summary || summary.current_balance === undefined) {
+        try {
+          if (typeof API.getFundSummary === 'function') {
+            const fundRes = await API.getFundSummary({ fund });
+            if (fundRes && typeof fundRes === 'object') {
+              summary = fundRes;
+            }
+          }
+        } catch (e) {
+          // Ignore and fallback to computing from items
+        }
       }
 
-      const tbody = document.getElementById('cash-flow-tbody');
-      if (!tbody) return;
+      // If summary is still missing or incomplete, compute from items
+      if (!summary || summary.current_balance === undefined) {
+        const totalRec = items.filter(x => x.type === 'receipt').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const totalPay = items.filter(x => x.type === 'payment').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const cashRec = items.filter(x => x.type === 'receipt' && (x.fund_type === 'cash' || !x.fund_type)).reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const cashPay = items.filter(x => x.type === 'payment' && (x.fund_type === 'cash' || !x.fund_type)).reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const bankRec = items.filter(x => x.type === 'receipt' && x.fund_type === 'bank').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
+        const bankPay = items.filter(x => x.type === 'payment' && x.fund_type === 'bank').reduce((sum, x) => sum + (Number(x.amount) || 0), 0);
 
-      if (!res.items || res.items.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không có giao dịch sổ quỹ nào</td></tr>`;
-        return;
+        summary = {
+          total_receipts: totalRec,
+          total_payments: totalPay,
+          current_balance: totalRec - totalPay,
+          total_balance: totalRec - totalPay,
+          cash_balance: cashRec - cashPay,
+          bank_balance: bankRec - bankPay
+        };
       }
 
-      tbody.innerHTML = res.items.map(item => `
-        <tr>
-          <td><strong>${item.code}</strong></td>
-          <td>${item.created_at}</td>
-          <td>
-            ${item.type === 'receipt' 
-              ? '<span class="badge-tag badge-green">Phiếu Thu (+)</span>' 
-              : '<span class="badge-tag badge-red">Phiếu Chi (-)</span>'}
-          </td>
-          <td><strong>${item.category}</strong></td>
-          <td>${item.target_name || 'Khác'}</td>
-          <td>
-            <span class="badge-tag ${item.fund_type === 'cash' ? 'badge-blue' : 'badge-purple'}">
-              ${item.fund_type === 'cash' ? 'Tiền mặt' : 'Ngân hàng'}
-            </span>
-          </td>
-          <td class="text-right tabular-nums font-bold" style="color: ${item.type === 'receipt' ? 'var(--color-success)' : 'var(--color-danger)'};">
-            ${item.type === 'receipt' ? '+' : '-'}${this.formatMoney(item.amount)}
-          </td>
-          <td><small style="color: var(--color-text-subtle);">${item.notes || ''}</small></td>
-        </tr>
-      `).join('');
+      this.renderCashFlowSummaryCards(summary);
+      this.renderCashFlowTableRows(items);
     } catch (err) {
+      console.error('Error loading cash flow:', err);
+      const tbody = document.getElementById('cash-flow-tbody');
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-state text-danger">Lỗi tải sổ quỹ: ${err.message}</td></tr>`;
+      }
       App.toast('Lỗi tải sổ quỹ: ' + err.message, 'error');
     }
+  },
+
+  async loadCashFlowData() {
+    return this.loadCashFlowTable();
+  },
+
+  renderCashFlowSummaryCards(summary = {}) {
+    const summaryCards = document.getElementById('cash-flow-summary-cards');
+    if (!summaryCards) return;
+
+    const currentBalance = summary.current_balance !== undefined ? summary.current_balance : (summary.total_balance !== undefined ? summary.total_balance : 0);
+    const totalReceipts = summary.total_receipts !== undefined ? summary.total_receipts : 0;
+    const totalPayments = summary.total_payments !== undefined ? summary.total_payments : 0;
+    const cashBalance = summary.cash_balance !== undefined ? summary.cash_balance : 0;
+    const bankBalance = summary.bank_balance !== undefined ? summary.bank_balance : 0;
+
+    summaryCards.innerHTML = `
+      <div class="stat-card">
+        <div class="stat-icon icon-blue">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Tồn quỹ hiện tại</p>
+          <h3 style="color: var(--color-primary);">${this.formatMoney(currentBalance)}</h3>
+          <small>Thực thu trừ thực chi</small>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon icon-green">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Tổng thực thu</p>
+          <h3 style="color: var(--color-success);">${this.formatMoney(totalReceipts)}</h3>
+          <small>Bán hàng & thu nợ</small>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon icon-red">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Tổng thực chi</p>
+          <h3 style="color: var(--color-danger);">${this.formatMoney(totalPayments)}</h3>
+          <small>Nhập hàng & chi phí</small>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon icon-purple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 7h10"/><path d="M7 12h10"/><path d="M7 17h10"/></svg>
+        </div>
+        <div class="stat-info">
+          <p>Phân loại quỹ</p>
+          <div style="font-size: 0.8rem; font-weight: 700; margin-top: 3px;" class="tabular-nums">
+            TM: ${this.formatMoney(cashBalance)}<br>
+            NH: ${this.formatMoney(bankBalance)}
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
+  renderCashFlowTableRows(items = []) {
+    const tbody = document.getElementById('cash-flow-tbody');
+    if (!tbody) return;
+
+    if (!items || items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" class="empty-state">Không có giao dịch sổ quỹ nào</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = items.map(item => `
+      <tr>
+        <td><strong>${item.code || ''}</strong></td>
+        <td>${item.created_at || ''}</td>
+        <td>
+          ${item.type === 'receipt' 
+            ? '<span class="badge-tag badge-green">Phiếu Thu (+)</span>' 
+            : '<span class="badge-tag badge-red">Phiếu Chi (-)</span>'}
+        </td>
+        <td><strong>${item.category || ''}</strong></td>
+        <td>${item.target_name || 'Khác'}</td>
+        <td>
+          <span class="badge-tag ${item.fund_type === 'bank' ? 'badge-purple' : (item.fund_type === 'debt' ? 'badge-amber' : 'badge-blue')}">
+            ${item.fund_type === 'bank' ? 'Ngân hàng' : (item.fund_type === 'debt' ? 'Ghi nợ' : 'Tiền mặt')}
+          </span>
+        </td>
+        <td class="text-right tabular-nums font-bold" style="color: ${item.type === 'receipt' ? 'var(--color-success)' : 'var(--color-danger)'};">
+          ${item.type === 'receipt' ? '+' : '-'}${this.formatMoney(item.amount)}
+        </td>
+        <td><small style="color: var(--color-text-subtle);">${item.notes || ''}</small></td>
+      </tr>
+    `).join('');
   },
 
   async exportCashFlowExcel() {
@@ -2694,7 +2917,7 @@ const App = {
       const type = document.getElementById('cf-type-filter')?.value || 'all';
       const fund = document.getElementById('cf-fund-filter')?.value || 'all';
       const res = await API.getCashFlow({ type, fund });
-      const items = res.items || [];
+      const { items } = this.normalizeCashFlowResponse(res);
       const headers = ['Mã phiếu', 'Thời gian', 'Loại phiếu', 'Hạng mục', 'Đối tượng', 'Tài khoản quỹ', 'Số tiền (VNĐ)', 'Mã chứng từ liên quan', 'Ghi chú'];
       const rows = items.map(item => [
         item.code,
@@ -2702,7 +2925,7 @@ const App = {
         item.type === 'receipt' ? 'Phiếu thu (+)' : 'Phiếu chi (-)',
         item.category || '',
         item.target_name || '',
-        item.fund_type === 'cash' ? 'Tiền mặt' : 'Ngân hàng',
+        item.fund_type === 'bank' ? 'Ngân hàng' : (item.fund_type === 'debt' ? 'Ghi nợ' : 'Tiền mặt'),
         item.amount || 0,
         item.reference_code || '',
         item.notes || ''
@@ -2715,24 +2938,44 @@ const App = {
 
   openCreateCashFlowModal(type) {
     const modal = document.getElementById('cash-flow-modal');
-    document.getElementById('cf-modal-type').value = type;
-    document.getElementById('cf-modal-title').textContent = type === 'receipt' ? 'Lập Phiếu Thu tiền (+)' : 'Lập Phiếu Chi tiền (-)';
-    document.getElementById('cf-category').value = type === 'receipt' ? 'Thu khác' : 'Chi chi phí vận hành';
-    document.getElementById('cf-amount').value = '';
-    document.getElementById('cf-target-name').value = '';
-    document.getElementById('cf-notes').value = '';
+    if (!modal) return;
+    const typeEl = document.getElementById('cf-modal-type');
+    const titleEl = document.getElementById('cf-modal-title');
+    const catEl = document.getElementById('cf-category');
+    const amtEl = document.getElementById('cf-amount');
+    const targetEl = document.getElementById('cf-target-name');
+    const fundEl = document.getElementById('cf-fund-type');
+    const notesEl = document.getElementById('cf-notes');
+
+    if (typeEl) typeEl.value = type;
+    if (titleEl) titleEl.textContent = type === 'receipt' ? 'Lập Phiếu Thu tiền (+)' : 'Lập Phiếu Chi tiền (-)';
+    if (catEl) catEl.value = type === 'receipt' ? 'Thu khác' : 'Chi chi phí vận hành';
+    if (amtEl) amtEl.value = '';
+    if (targetEl) targetEl.value = '';
+    if (fundEl) fundEl.value = 'cash';
+    if (notesEl) notesEl.value = '';
     modal.classList.add('active');
   },
 
   async saveCashFlowVoucher() {
-    const type = document.getElementById('cf-modal-type').value;
-    const category = document.getElementById('cf-category').value.trim();
-    const amount = parseFloat(document.getElementById('cf-amount').value);
-    const targetName = document.getElementById('cf-target-name').value.trim();
-    const fundType = document.getElementById('cf-fund-type').value;
-    const notes = document.getElementById('cf-notes').value.trim();
+    const type = document.getElementById('cf-modal-type')?.value;
+    const category = document.getElementById('cf-category')?.value?.trim();
+    const amount = parseFloat(document.getElementById('cf-amount')?.value);
+    const targetName = document.getElementById('cf-target-name')?.value?.trim();
+    const fundType = document.getElementById('cf-fund-type')?.value || 'cash';
+    const notes = document.getElementById('cf-notes')?.value?.trim();
 
-    if (isNaN(amount) || amount <= 0) {
+    if (!type || (type !== 'receipt' && type !== 'payment')) {
+      App.toast('Loại phiếu không hợp lệ', 'warning');
+      return;
+    }
+
+    if (!category) {
+      App.toast('Vui lòng nhập hạng mục thu/chi', 'warning');
+      return;
+    }
+
+    if (isNaN(amount) || !isFinite(amount) || amount <= 0) {
       App.toast('Số tiền phải lớn hơn 0', 'warning');
       return;
     }
@@ -2747,9 +2990,9 @@ const App = {
         notes: notes
       });
       App.toast(`Tạo ${type === 'receipt' ? 'phiếu thu' : 'phiếu chi'} thành công`, 'success');
-      document.getElementById('cash-flow-modal').classList.remove('active');
-      this.loadCashFlowData();
-      this.loadTopFundSummary();
+      document.getElementById('cash-flow-modal')?.classList.remove('active');
+      await this.loadCashFlowTable();
+      await this.loadTopFundSummary();
     } catch (err) {
       App.toast('Lỗi lưu sổ quỹ: ' + err.message, 'error');
     }
@@ -4779,6 +5022,14 @@ window.openProductModal = (id) => App.openProductModal(id);
 window.editProduct = (id) => App.editProduct(id);
 window.openEditProductModal = (id) => App.openEditProductModal(id);
 window.openCreateProductModal = () => App.openCreateProductModal();
+window.submitCustomerDebtPayment = () => App.submitCustomerDebtPayment();
+window.submitCollectDebt = () => App.submitCollectDebt();
+window.openPayCustomerDebtModal = (id, name, debt) => App.openPayCustomerDebtModal(id, name, debt);
+window.loadCashFlowTable = () => App.loadCashFlowTable();
+window.loadCashFlowData = () => App.loadCashFlowData();
+window.openCreateCashFlowModal = (type) => App.openCreateCashFlowModal(type);
+window.saveCashFlowVoucher = () => App.saveCashFlowVoucher();
+window.exportCashFlowExcel = () => App.exportCashFlowExcel();
 
 document.addEventListener('DOMContentLoaded', () => {
   App.init();
